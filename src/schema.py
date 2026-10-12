@@ -1,4 +1,4 @@
-from typing import Literal, Optional, Union
+from typing import List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -28,6 +28,37 @@ class TelcoCustomerRecord(BaseModel):
         "Credit card (automatic)"
     ]
     MonthlyCharges: float = Field(ge=0.0)
-    # TotalCharges can be a float or a string with spaces in the raw CSV. We accept both here.
     TotalCharges: Union[float, str]
-    Churn: Optional[Literal["Yes", "No"]] = None # Can be None for inference
+    Churn: Optional[Literal["Yes", "No"]] = None
+
+class PredictionResponse(BaseModel):
+    customerID: str
+    churn_probability: float
+    churn_prediction: int
+    risk_segment: str
+    model_version: str
+
+class BatchPredictionRequest(BaseModel):
+    customers: List[TelcoCustomerRecord]
+
+class BatchPredictionResponse(BaseModel):
+    predictions: List[PredictionResponse]
+
+class FeatureContribution(BaseModel):
+    name: str
+    contribution: float
+
+class ExplainResponse(BaseModel):
+    customerID: str
+    base_value: float
+    features: List[FeatureContribution]
+
+class RecommendationAction(BaseModel):
+    action: str
+    reason: str
+
+class RetentionResponse(BaseModel):
+    customerID: str
+    risk_segment: str
+    annual_revenue_exposure: float
+    recommendations: List[RecommendationAction]
