@@ -2,10 +2,9 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from src.database import Base
+from src.database import Base, get_db
 from src.models import PredictionRecord, RetentionRecommendationRecord
 
-# In-memory SQLite for testing
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
 
 @pytest.fixture(scope="module")
@@ -43,7 +42,6 @@ def test_create_prediction_record(db_session):
     assert pred.risk_segment == "High"
 
 def test_create_retention_recommendation_record(db_session):
-    # First need a prediction record
     pred = PredictionRecord(
         customer_id="TEST-2",
         churn_probability=0.5,
@@ -66,3 +64,12 @@ def test_create_retention_recommendation_record(db_session):
     assert rec.id is not None
     assert rec.action == "Offer Discount"
     assert rec.prediction_record.customer_id == "TEST-2"
+
+def test_get_db_generator():
+    db_gen = get_db()
+    db = next(db_gen)
+    assert db is not None
+    try:
+        next(db_gen)
+    except StopIteration:
+        pass

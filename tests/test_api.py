@@ -1,10 +1,11 @@
+from unittest.mock import patch
+
 import pytest
 from fastapi.testclient import TestClient
 
 from src.api import app
 
 
-# We use TestClient as a context manager to trigger lifespan events
 @pytest.fixture(scope="module")
 def client():
     with TestClient(app) as client:
@@ -94,7 +95,49 @@ def test_retention_recommendation(client, sample_payload):
     assert isinstance(data["recommendations"], list)
 
 def test_predict_invalid_schema(client):
-    # Missing required field 'gender'
     bad_payload = {"customerID": "bad"}
     response = client.post("/predict", json=bad_payload)
-    assert response.status_code == 422 # Pydantic validation error
+    assert response.status_code == 422
+
+@patch("src.api.app_state")
+def test_api_predict_exception(mock_state, client, sample_payload):
+    mock_state["preprocessor"].transform.side_effect = Exception("Transformation failed")
+
+    response = client.post("/predict", json=sample_payload)
+    assert response.status_code == 400
+    assert "Transformation failed" in response.json()["detail"]
+
+@patch("src.api.app_state")
+def test_api_predict_batch_exception(mock_state, client, sample_payload):
+    response = client.post("/predict/batch", json={"customers": []})
+    assert response.status_code == 400
+    assert "Empty customer list" in response.json()["detail"]
+
+    mock_state["preprocessor"].transform.side_effect = Exception("Transformation failed")
+    response2 = client.post("/predict/batch", json={"customers": [sample_payload]})
+    assert response2.status_code == 400
+    assert "Transformation failed" in response2.json()["detail"]
+
+@patch("src.api.app_state")
+def test_api_explain_exception(mock_state, client, sample_payload):
+    mock_state["preprocessor"].transform.side_effect = Exception("Transformation failed")
+    response = client.post("/explain", json=sample_payload)
+    assert response.status_code == 400
+    assert "Transformation failed" in response.json()["detail"]
+
+@patch("src.api.app_state")
+def test_api_retention_exception(mock_state, client, sample_payload):
+    mock_state["preprocessor"].transform.side_effect = Exception("Transformation failed")
+    response = client.post("/retention-recommendation", json=sample_payload)
+    assert response.status_code == 400
+    assert "Transformation failed" in response.json()["detail"]
+
+def test_api_ready_not_loaded(client):
+    with patch("src.api.app_state", {}):
+        response = client.get("/ready")
+        assert response.status_code == 503
+
+def test_api_model_info_not_loaded(client):
+    with patch("src.api.app_state", {}):
+        response = client.get("/model/info")
+        assert response.status_code == 503

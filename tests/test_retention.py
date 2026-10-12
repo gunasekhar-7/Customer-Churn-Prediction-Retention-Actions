@@ -54,3 +54,12 @@ def test_generate_retention_recommendations():
     fiber_recs = generate_retention_recommendations(fiber_customer, 0.7, [{"name": "Dummy", "contribution": 0.1}])
     actions = [r["action"] for r in fiber_recs]
     assert "Offer Free Tech Support Add-on for 3 months" in actions
+
+
+def test_generate_retention_high_fallback():
+    # Covers line 75: High risk but no specific rules trigger -> fallback to agent
+    customer_data = {"Contract": "Two year", "InternetService": "DSL", "TechSupport": "Yes"}
+    shap_features = [{"name": "Dummy", "contribution": 0.1}]
+    recs = generate_retention_recommendations(customer_data, 0.9, shap_features)
+    assert len(recs) == 1
+    assert "Trigger Personal Agent Call" in recs[0]["action"]

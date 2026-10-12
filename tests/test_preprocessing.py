@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.preprocessing import build_preprocessor, get_binary_target
+from src.preprocessing import TotalChargesCleaner, build_preprocessor, get_binary_target
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def mock_raw_data_with_missing():
         'SeniorCitizen': [0, 1],
         'Partner': ['Yes', 'No'],
         'Dependents': ['No', 'Yes'],
-        'tenure': [0, 24], # 0 tenure usually means missing TotalCharges
+        'tenure': [0, 24],
         'PhoneService': ['No', 'Yes'],
         'MultipleLines': ['No phone service', 'Yes'],
         'InternetService': ['DSL', 'Fiber optic'],
@@ -50,7 +50,7 @@ def mock_raw_data_with_missing():
         'PaperlessBilling': ['Yes', 'No'],
         'PaymentMethod': ['Mailed check', 'Mailed check'],
         'MonthlyCharges': [52.55, 89.10],
-        'TotalCharges': [' ', '2138.4'] # Blank space
+        'TotalCharges': [' ', '2138.4']
     })
     return df
 
@@ -58,7 +58,6 @@ def test_build_preprocessor_structure():
     preprocessor = build_preprocessor()
     assert preprocessor is not None
 
-    # Check that it has transformers configured
     transformers = preprocessor.transformers
     assert len(transformers) == 2
 
@@ -72,21 +71,22 @@ def test_pipeline_transform_valid_data(mock_raw_data):
     preprocessor = build_preprocessor()
     transformed = preprocessor.fit_transform(mock_raw_data)
 
-    # Should return a 2D numpy array
     assert isinstance(transformed, np.ndarray)
     assert transformed.shape[0] == 2
-    # Number of columns will be large due to OneHotEncoding
     assert transformed.shape[1] > 10
 
 def test_pipeline_transform_missing_total_charges(mock_raw_data_with_missing):
     preprocessor = build_preprocessor()
-    # If the cleaner works, it converts ' ' to NaN, then SimpleImputer fills with median.
     transformed = preprocessor.fit_transform(mock_raw_data_with_missing)
-
-    # Should not contain any NaNs
     assert not np.isnan(transformed).any()
 
 def test_get_binary_target():
     df = pd.DataFrame({'Churn': ['Yes', 'No', 'Yes']})
     target = get_binary_target(df)
     assert target.tolist() == [1, 0, 1]
+
+def test_cleaner_passes_arrays():
+    cleaner = TotalChargesCleaner()
+    arr = np.array([[1, 2], [3, 4]])
+    out = cleaner.transform(arr)
+    np.testing.assert_array_equal(arr, out)

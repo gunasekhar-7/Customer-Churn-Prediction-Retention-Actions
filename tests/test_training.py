@@ -54,3 +54,16 @@ def test_run_hyperparameter_optimization(simple_pipeline, dummy_data):
     best_model = run_hyperparameter_optimization(simple_pipeline, param_grid, X, y, cv=2)
     assert isinstance(best_model, Pipeline)
     assert best_model.named_steps['classifier'].C in [0.1, 1.0]
+
+
+class MockModelNoProba:
+    def predict(self, X):
+        return np.array([0, 1])
+
+def test_evaluate_model_no_predict_proba():
+    model = MockModelNoProba()
+    X = pd.DataFrame()
+    y = pd.Series([0, 1])
+    metrics = evaluate_model(model, X, y)
+    assert metrics['roc_auc'] is None
+    assert metrics['pr_auc'] is None
