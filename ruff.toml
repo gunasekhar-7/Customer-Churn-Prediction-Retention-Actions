@@ -30,7 +30,7 @@ exclude = [
 ]
 
 [lint]
-# Enable standard rules
+# Enable standard rules, but exclude E501 for long lines since CSV mock data in tests will trigger it.
 select = [
     "E",  # pycodestyle errors
     "W",  # pycodestyle warnings
@@ -39,7 +39,9 @@ select = [
     "C",  # flake8-comprehensions
     "B",  # flake8-bugbear
 ]
-ignore = []
+ignore = [
+    "E501" # Line too long
+]
 
 [lint.mccabe]
 # Unlike Flake8, default to a complexity level of 10.
