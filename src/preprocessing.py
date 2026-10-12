@@ -10,32 +10,25 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 class TotalChargesCleaner(BaseEstimator, TransformerMixin):
     """
     Custom transformer to clean the 'TotalCharges' column.
-    It replaces empty strings or spaces with NaN and converts to float.
     """
     def fit(self, X: pd.DataFrame, y=None):
         return self
 
     def transform(self, X: pd.DataFrame, y=None) -> pd.DataFrame:
-        # Create a copy to avoid SettingWithCopyWarning
         X_copy = X.copy()
-
-        # If passed a 2D numpy array somehow, handle it gracefully
         if isinstance(X_copy, np.ndarray):
              pass
         else:
             if 'TotalCharges' in X_copy.columns:
-                # Replace whitespace strings with NaN, then cast to float
                 X_copy['TotalCharges'] = pd.to_numeric(
                     X_copy['TotalCharges'].replace(r'^\s*$', np.nan, regex=True)
                 )
         return X_copy
 
+    def get_feature_names_out(self, input_features=None):
+        return input_features
+
 def build_preprocessor() -> ColumnTransformer:
-    """
-    Constructs a Scikit-Learn ColumnTransformer pipeline for the Telco dataset.
-    Handles imputation, scaling, and categorical encoding.
-    Expects input dataframe to NOT contain 'customerID' or 'Churn' columns.
-    """
     numeric_features = ['tenure', 'MonthlyCharges', 'TotalCharges']
 
     categorical_features = [
@@ -66,7 +59,4 @@ def build_preprocessor() -> ColumnTransformer:
     return preprocessor
 
 def get_binary_target(df: pd.DataFrame, target_column: str = 'Churn') -> pd.Series:
-    """
-    Converts 'Yes'/'No' string targets into binary 1/0.
-    """
     return df[target_column].map({'Yes': 1, 'No': 0})
