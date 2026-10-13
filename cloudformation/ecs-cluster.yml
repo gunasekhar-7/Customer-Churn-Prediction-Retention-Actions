@@ -1,0 +1,70 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ECS Cluster and Fargate Service definition for Customer Churn Platform
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: The VPC to deploy into
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnets for the ECS tasks
+  ImageUrl:
+    Type: String
+    Description: ECR Image URL (e.g., 123456789.dkr.ecr.us-east-1.amazonaws.com/churn-api:latest)
+
+Resources:
+  ChurnECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: ChurnPredictionCluster
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  ApiTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: churn-api-task
+      Cpu: '512'
+      Memory: '1024'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: churn-api
+          Image: !Ref ImageUrl
+          PortMappings:
+            - ContainerPort: 8000
+          Environment:
+            - Name: DATABASE_URL
+              Value: "{{resolve:secretsmanager:ChurnDBCredentials:SecretString:url}}" # Mock secrets manager resolution
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: /ecs/churn-api
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  ApiService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref ChurnECSCluster
+      ServiceName: churn-api-service
+      TaskDefinition: !Ref ApiTaskDefinition
+      DesiredCount: 2
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: !Ref SubnetIds
