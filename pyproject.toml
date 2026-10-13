@@ -7,7 +7,7 @@ name = "churn_platform"
 version = "0.1.0"
 description = "Customer Churn Prediction & Retention Intelligence Platform"
 authors = [
-    {name = "Jules", email = "jules@example.com"}
+    {name = "Portfolio Author", email = "author@example.com"}
 ]
 requires-python = ">=3.11"
 dependencies = [
