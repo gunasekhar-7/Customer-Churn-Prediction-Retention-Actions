@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.api import app
+from src.monitoring import check_drift_thresholds, log_request_metrics
 
 
 @pytest.fixture(scope="module")
@@ -141,3 +142,23 @@ def test_api_model_info_not_loaded(client):
     with patch("src.api.app_state", {}):
         response = client.get("/model/info")
         assert response.status_code == 503
+
+def test_log_request_metrics(caplog):
+    import logging
+    with caplog.at_level(logging.INFO, logger="churn_metrics"):
+        log_request_metrics("/test", 12.3, 200, {"extra": "data"})
+    assert "api_request" in caplog.text
+    assert "/test" in caplog.text
+    assert "12.3" in caplog.text
+    assert "data" in caplog.text
+
+def test_check_drift_thresholds(caplog):
+    import logging
+    with caplog.at_level(logging.WARNING, logger="churn_metrics"):
+        res = check_drift_thresholds(0.3)
+        assert res is False
+        assert "drift_alert" not in caplog.text
+
+        res2 = check_drift_thresholds(0.9)
+        assert res2 is True
+        assert "drift_alert" in caplog.text

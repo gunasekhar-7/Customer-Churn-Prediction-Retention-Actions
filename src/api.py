@@ -1,14 +1,17 @@
 import logging
+import time
 from contextlib import asynccontextmanager
 
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.explainability import get_local_explanation, get_shap_explainer
 from src.inference import predict_with_threshold
 from src.model_management import get_model_artifact
+from src.monitoring import check_drift_thresholds, log_request_metrics
 from src.retention_intelligence import (
     estimate_revenue_exposure,
     generate_retention_recommendations,
@@ -58,6 +61,21 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+class MetricsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start_time = time.time()
+        try:
+            response = await call_next(request)
+            process_time = (time.time() - start_time) * 1000
+            log_request_metrics(request.url.path, process_time, response.status_code)
+            return response
+        except Exception as e:
+            process_time = (time.time() - start_time) * 1000
+            log_request_metrics(request.url.path, process_time, 500, {"error": str(e)})
+            raise e
+
+app.add_middleware(MetricsMiddleware)
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {str(exc)}")
@@ -96,6 +114,8 @@ def predict(record: TelcoCustomerRecord):
 
         prob = float(probs[0])
         pred = int(preds[0])
+
+        check_drift_thresholds(prob)
 
         return PredictionResponse(
             customerID=record.customerID,
