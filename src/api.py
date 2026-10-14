@@ -1,13 +1,17 @@
 import logging
 import time
 from contextlib import asynccontextmanager
+from typing import Any, AsyncGenerator, Awaitable, Callable, Dict
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from src.data_protection import create_prediction_record, get_minimized_features
+from src.database import get_db
 from src.explainability import get_local_explanation, get_shap_explainer
 from src.inference import predict_with_threshold
 from src.model_management import get_model_artifact
@@ -22,6 +26,7 @@ from src.schema import (
     BatchPredictionResponse,
     ExplainResponse,
     PredictionResponse,
+    RecommendationAction,
     RetentionResponse,
     TelcoCustomerRecord,
 )
@@ -29,10 +34,10 @@ from src.schema import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app_state = {}
+app_state: Dict[str, Any] = {}
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         logger.info("Loading model artifact...")
         artifact = get_model_artifact()
@@ -62,7 +67,7 @@ app = FastAPI(
 )
 
 class MetricsMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Any]]) -> Any:
         start_time = time.time()
         try:
             response = await call_next(request)
@@ -77,7 +82,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 app.add_middleware(MetricsMiddleware)
 
 @app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.error(f"Unhandled exception: {str(exc)}")
     return JSONResponse(
         status_code=500,
@@ -85,17 +90,17 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 @app.get("/health")
-def health_check():
+def health_check() -> Dict[str, str]:
     return {"status": "ok"}
 
 @app.get("/ready")
-def ready_check():
+def ready_check() -> Dict[str, str]:
     if "model" in app_state:
         return {"status": "ready"}
     raise HTTPException(status_code=503, detail="Model not loaded yet")
 
 @app.get("/model/info")
-def model_info():
+def model_info() -> Dict[str, Any]:
     if "version" not in app_state:
          raise HTTPException(status_code=503, detail="Model not loaded yet")
     return {
@@ -105,7 +110,7 @@ def model_info():
     }
 
 @app.post("/predict", response_model=PredictionResponse)
-def predict(record: TelcoCustomerRecord):
+def predict(record: TelcoCustomerRecord, db: Session = Depends(get_db)) -> PredictionResponse:  # noqa: B008
     df = pd.DataFrame([record.model_dump()])
 
     try:
@@ -117,6 +122,21 @@ def predict(record: TelcoCustomerRecord):
 
         check_drift_thresholds(prob)
 
+        # Persist prediction to database with data minimization
+        raw_data = record.model_dump()
+        minimized_features = get_minimized_features(raw_data)
+        prediction_record = create_prediction_record(
+            customer_id=record.customerID,
+            churn_probability=prob,
+            churn_prediction=pred,
+            risk_segment=segment_risk(prob),
+            model_version=app_state["version"],
+            minimized_features=minimized_features,
+        )
+        db.add(prediction_record)
+        db.commit()
+        db.refresh(prediction_record)
+
         return PredictionResponse(
             customerID=record.customerID,
             churn_probability=prob,
@@ -125,11 +145,12 @@ def predict(record: TelcoCustomerRecord):
             model_version=app_state["version"]
         )
     except Exception as e:
+        db.rollback()
         logger.error(f"Prediction error: {e}")
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 @app.post("/predict/batch", response_model=BatchPredictionResponse)
-def predict_batch(request: BatchPredictionRequest):
+def predict_batch(request: BatchPredictionRequest) -> BatchPredictionResponse:
     if not request.customers:
         raise HTTPException(status_code=400, detail="Empty customer list")
 
@@ -156,7 +177,7 @@ def predict_batch(request: BatchPredictionRequest):
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 @app.post("/explain", response_model=ExplainResponse)
-def explain(record: TelcoCustomerRecord):
+def explain(record: TelcoCustomerRecord) -> ExplainResponse:
     df = pd.DataFrame([record.model_dump()])
 
     try:
@@ -173,7 +194,7 @@ def explain(record: TelcoCustomerRecord):
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 @app.post("/retention-recommendation", response_model=RetentionResponse)
-def retention_recommendation(record: TelcoCustomerRecord):
+def retention_recommendation(record: TelcoCustomerRecord) -> RetentionResponse:
     df = pd.DataFrame([record.model_dump()])
     raw_data = record.model_dump()
 
@@ -189,7 +210,8 @@ def retention_recommendation(record: TelcoCustomerRecord):
         monthly_charges = raw_data.get('MonthlyCharges', 0.0)
         exposure = estimate_revenue_exposure(prob, float(monthly_charges))
 
-        recs = generate_retention_recommendations(raw_data, prob, explanation["features"])
+        recs_dicts = generate_retention_recommendations(raw_data, prob, explanation["features"])
+        recs = [RecommendationAction(action=r["action"], reason=r["reason"]) for r in recs_dicts]
 
         return RetentionResponse(
             customerID=record.customerID,

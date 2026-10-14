@@ -2,6 +2,7 @@ from typing import Any, Dict, List
 
 import numpy as np
 import shap
+from sklearn.base import BaseEstimator
 from sklearn.compose import ColumnTransformer
 
 
@@ -26,7 +27,8 @@ def get_feature_names(preprocessor: ColumnTransformer) -> List[str]:
 
     return feature_names
 
-def get_shap_explainer(model, X_background: np.ndarray) -> shap.Explainer:
+
+def get_shap_explainer(model: BaseEstimator, X_background: np.ndarray) -> shap.Explainer:
     """
     Returns a fitted SHAP Explainer.
     Handles Linear models gracefully. Tree-based models are also supported but
@@ -41,6 +43,7 @@ def get_shap_explainer(model, X_background: np.ndarray) -> shap.Explainer:
     else:
         # Fallback to Kernel (slow but universal)
         return shap.KernelExplainer(model.predict_proba, shap.sample(X_background, 100))
+
 
 def get_local_explanation(
     explainer: shap.Explainer,
@@ -70,7 +73,7 @@ def get_local_explanation(
     if isinstance(base_val, (list, np.ndarray)):
         base_val = base_val[1] if len(base_val) > 1 else base_val[0]
 
-    explanation = {
+    explanation: Dict[str, Any] = {
         "base_value": float(base_val),
         "features": []
     }
@@ -84,6 +87,7 @@ def get_local_explanation(
     # Sort by absolute magnitude of contribution
     explanation["features"] = sorted(explanation["features"], key=lambda x: abs(x["contribution"]), reverse=True)
     return explanation
+
 
 def get_global_explanation(
     explainer: shap.Explainer,
@@ -102,7 +106,7 @@ def get_global_explanation(
 
     mean_abs_shap = np.abs(values).mean(axis=0)
 
-    global_importance = []
+    global_importance: List[Dict[str, Any]] = []
     for feature_name, value in zip(feature_names, mean_abs_shap, strict=False):
         global_importance.append({
             "name": feature_name,

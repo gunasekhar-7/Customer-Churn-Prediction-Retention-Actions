@@ -1,6 +1,6 @@
 import os
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, cast
 
 import joblib
 from sklearn.pipeline import Pipeline
@@ -40,7 +40,7 @@ def load_model_artifact(filepath: str) -> Dict[str, Any]:
     """
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Artifact not found at {filepath}")
-    return joblib.load(filepath)
+    return cast(Dict[str, Any], joblib.load(filepath))
 
 def get_model_artifact(filepath: str = "models/model_v1.joblib") -> Dict[str, Any]:
     """
@@ -50,9 +50,9 @@ def get_model_artifact(filepath: str = "models/model_v1.joblib") -> Dict[str, An
     global _MODEL_CACHE
     if "artifact" not in _MODEL_CACHE:
         _MODEL_CACHE["artifact"] = load_model_artifact(filepath)
-    return _MODEL_CACHE["artifact"]
+    return cast(Dict[str, Any], _MODEL_CACHE["artifact"])
 
-def clear_model_cache():
+def clear_model_cache() -> None:
     """Clears the cached model artifact (useful for testing)."""
     global _MODEL_CACHE
     _MODEL_CACHE.clear()

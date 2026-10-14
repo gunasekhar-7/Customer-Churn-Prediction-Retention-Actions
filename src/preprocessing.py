@@ -1,3 +1,5 @@
+from typing import Any, Optional, Union
+
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
@@ -11,21 +13,23 @@ class TotalChargesCleaner(BaseEstimator, TransformerMixin):
     """
     Custom transformer to clean the 'TotalCharges' column.
     """
-    def fit(self, X: pd.DataFrame, y=None):
+    def fit(self, X: pd.DataFrame, y: Optional[Any] = None) -> "TotalChargesCleaner":
         return self
 
-    def transform(self, X: pd.DataFrame, y=None) -> pd.DataFrame:
+    def transform(self, X: Union[pd.DataFrame, np.ndarray], y: Optional[Any] = None) -> pd.DataFrame:
+        if isinstance(X, np.ndarray):
+            raise TypeError(
+                "TotalChargesCleaner only accepts pandas DataFrame input. "
+                "Received numpy.ndarray. This transformer requires column-based operations."
+            )
         X_copy = X.copy()
-        if isinstance(X_copy, np.ndarray):
-             pass
-        else:
-            if 'TotalCharges' in X_copy.columns:
-                X_copy['TotalCharges'] = pd.to_numeric(
-                    X_copy['TotalCharges'].replace(r'^\s*$', np.nan, regex=True)
-                )
+        if 'TotalCharges' in X_copy.columns:
+            X_copy['TotalCharges'] = pd.to_numeric(
+                X_copy['TotalCharges'].replace(r'^\s*$', np.nan, regex=True)
+            )
         return X_copy
 
-    def get_feature_names_out(self, input_features=None):
+    def get_feature_names_out(self, input_features: Optional[Any] = None) -> Any:
         return input_features
 
 def build_preprocessor() -> ColumnTransformer:

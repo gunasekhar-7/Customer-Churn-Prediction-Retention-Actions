@@ -20,7 +20,12 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 def get_url():
-    return os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/churn_db")
+    # Use psycopg2 driver explicitly since psycopg2-binary is in dependencies
+    url = os.getenv("DATABASE_URL", "postgresql+psycopg2://postgres:postgres@localhost:5432/churn_db")
+    # Ensure we use psycopg2 driver if plain postgresql:// is provided
+    if url.startswith("postgresql://") and not url.startswith("postgresql+psycopg2://"):
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    return url
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.
