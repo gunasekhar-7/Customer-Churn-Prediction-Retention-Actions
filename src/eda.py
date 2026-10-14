@@ -12,7 +12,7 @@ def calculate_class_imbalance(df: pd.DataFrame, target_column: str) -> Dict[str,
         raise ValueError(f"Column '{target_column}' not found in dataframe.")
 
     counts = df[target_column].value_counts(normalize=True)
-    return counts.to_dict()
+    return {str(k): float(v) for k, v in counts.items()}
 
 def get_numeric_summary(df: pd.DataFrame) -> pd.DataFrame:
     """

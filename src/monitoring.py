@@ -1,10 +1,10 @@
 import json
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger("churn_metrics")
 
-def log_request_metrics(endpoint: str, process_time_ms: float, status_code: int, extra_metadata: Dict[str, Any] = None):
+def log_request_metrics(endpoint: str, process_time_ms: float, status_code: int, extra_metadata: Optional[Dict[str, Any]] = None) -> None:
     """
     Outputs structured JSON logs designed to be ingested by AWS CloudWatch or ELK.
     Tracks API latency and success rates.

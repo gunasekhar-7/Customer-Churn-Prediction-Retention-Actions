@@ -1,26 +1,357 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: ECS Cluster and Fargate Service definition for Customer Churn Platform
+Description: ECS Cluster and Fargate Service definition for Customer Churn Platform - Hardened Network Configuration
 
 Parameters:
   VpcId:
     Type: AWS::EC2::VPC::Id
     Description: The VPC to deploy into
-  SubnetIds:
+  PrivateSubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
-    Description: Subnets for the ECS tasks
+    Description: Private subnets for ECS tasks (no public IP)
+  PublicSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Public subnets for ALB
   ImageUrl:
     Type: String
     Description: ECR Image URL (e.g., 123456789.dkr.ecr.us-east-1.amazonaws.com/churn-api:latest)
+  DatabaseEndpoint:
+    Type: String
+    Description: RDS Database endpoint (hostname:port)
+  DatabasePort:
+    Type: Number
+    Default: 5432
+    Description: RDS Database port
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues: [development, staging, production]
+    Description: Deployment environment
+  SSLCertificateArn:
+    Type: String
+    Description: ACM Certificate ARN for HTTPS (required for production)
 
 Resources:
+  # ============================================================
+  # ECS Cluster
+  # ============================================================
   ChurnECSCluster:
     Type: AWS::ECS::Cluster
     Properties:
-      ClusterName: ChurnPredictionCluster
+      ClusterName: !Sub ChurnPredictionCluster-${Environment}
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
 
+  # ============================================================
+  # Security Groups
+  # ============================================================
+  # ALB Security Group - allows inbound HTTPS from internet
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub churn-alb-sg-${Environment}
+      GroupDescription: Security group for ALB - allows HTTPS inbound
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS from internet
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP from internet (redirects to HTTPS)
+      Tags:
+        - Key: Name
+          Value: !Sub churn-alb-sg-${Environment}
+
+  # ECS Task Security Group - only allows traffic from ALB
+  ECSTaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub churn-ecs-task-sg-${Environment}
+      GroupDescription: Security group for ECS tasks - only allows traffic from ALB
+      VpcId: !Ref VpcId
+      Tags:
+        - Key: Name
+          Value: !Sub churn-ecs-task-sg-${Environment}
+
+  # ALB to ECS Task Ingress (separate resource to avoid circular dependency)
+  ALBToECSTaskIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ECSTaskSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8000
+      ToPort: 8000
+      SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Description: Allow traffic from ALB to ECS tasks
+
+  # ALB to ECS Task Egress (separate resource to avoid circular dependency)
+  ALBToECSTaskEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ALBSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8000
+      ToPort: 8000
+      DestinationSecurityGroupId: !Ref ECSTaskSecurityGroup
+      Description: Allow ALB to forward traffic to ECS tasks
+
+  # ECS Task Egress to Internet (HTTPS)
+  ECSTaskEgressHTTPS:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ECSTaskSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+      Description: HTTPS outbound for ECR, S3, CloudWatch, external APIs
+
+  # RDS Database Security Group - only allows traffic from ECS tasks
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub churn-rds-sg-${Environment}
+      GroupDescription: Security group for RDS - only allows traffic from ECS tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref DatabasePort
+          ToPort: !Ref DatabasePort
+          SourceSecurityGroupId: !Ref ECSTaskSecurityGroup
+          Description: Allow PostgreSQL from ECS tasks only
+      Tags:
+        - Key: Name
+          Value: !Sub churn-rds-sg-${Environment}
+
+  # ECS Task to Database Ingress
+  ECSTaskToDatabaseIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DatabaseSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref DatabasePort
+      ToPort: !Ref DatabasePort
+      SourceSecurityGroupId: !Ref ECSTaskSecurityGroup
+      Description: Allow PostgreSQL from ECS tasks only
+
+  # ECS Task to Database Egress
+  ECSTaskToDatabaseEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ECSTaskSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref DatabasePort
+      ToPort: !Ref DatabasePort
+      DestinationSecurityGroupId: !Ref DatabaseSecurityGroup
+      Description: PostgreSQL to RDS
+
+  # ============================================================
+  # VPC Endpoints (Interface endpoints for private connectivity)
+  # ============================================================
+  # ECR API endpoint for pulling images
+  ECRVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E1010
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ecr.api
+      VpcEndpointType: Interface
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds:
+        - !Ref ECSTaskSecurityGroup
+      PrivateDnsEnabled: true
+
+  # ECR DKR endpoint for pulling image layers
+  ECRDkrVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E1010
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ecr.dkr
+      VpcEndpointType: Interface
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds:
+        - !Ref ECSTaskSecurityGroup
+      PrivateDnsEnabled: true
+
+  # S3 Gateway endpoint for model artifacts
+  S3VpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref PrivateRouteTable
+
+  # CloudWatch Logs endpoint
+  CloudWatchLogsVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.logs
+      VpcEndpointType: Interface
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds:
+        - !Ref ECSTaskSecurityGroup
+      PrivateDnsEnabled: true
+
+  # CloudWatch Monitoring endpoint
+  CloudWatchMonitoringVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.monitoring
+      VpcEndpointType: Interface
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds:
+        - !Ref ECSTaskSecurityGroup
+      PrivateDnsEnabled: true
+
+  # Secrets Manager endpoint for database credentials
+  SecretsManagerVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.secretsmanager
+      VpcEndpointType: Interface
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds:
+        - !Ref ECSTaskSecurityGroup
+      PrivateDnsEnabled: true
+
+  # ============================================================
+  # NAT Gateway and Routing (for private subnet outbound access)
+  # ============================================================
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub churn-nat-eip-${Environment}
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Select [0, !Ref PublicSubnetIds]
+      Tags:
+        - Key: Name
+          Value: !Sub churn-nat-gw-${Environment}
+
+  # Route table for private subnets (via NAT Gateway)
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpcId
+      Tags:
+        - Key: Name
+          Value: !Sub churn-private-rt-${Environment}
+
+  PrivateRouteTableAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Select [0, !Ref PrivateSubnetIds]
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Select [1, !Ref PrivateSubnetIds]
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateRouteToNatGateway:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  # ============================================================
+  # Application Load Balancer
+  # ============================================================
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub churn-alb-${Environment}
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+        - Key: deletion_protection.enabled
+          Value: 'true'
+        - Key: access_logs.s3.enabled
+          Value: 'false' # Enable in production with proper S3 bucket
+      Subnets: !Ref PublicSubnetIds
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      IpAddressType: ipv4
+
+  ALBListenerHTTPS:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Protocol: HTTPS
+      Port: 443
+      Certificates:
+        - CertificateArn: !Ref SSLCertificateArn
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref APITargetGroup
+
+  ALBListenerHTTP:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig:
+            Protocol: HTTPS
+            Port: 443
+            StatusCode: HTTP_301
+
+  # Target Group for API service
+  APITargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub churn-api-tg-${Environment}
+      Port: 8000
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+      TargetType: ip
+      HealthCheckPath: /health
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+
+  # ============================================================
+  # IAM Roles
+  # ============================================================
   TaskExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: !Sub churn-task-execution-role-${Environment}
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -30,41 +361,362 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ChurnTaskExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource:
+                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:ChurnDBCredentials*
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub arn:aws:s3:::churn-model-artifacts-${AWS::AccountId}-${Environment}/*
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: '*'
 
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub churn-task-role-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ChurnTaskPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub arn:aws:s3:::churn-model-artifacts-${AWS::AccountId}-${Environment}/*
+              - Effect: Allow
+                Action:
+                  - rds-db:connect
+                Resource:
+                  - !Sub arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:*/*
+
+  # ============================================================
+  # S3 Bucket for Model Artifacts
+  # ============================================================
+  ModelArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub churn-model-artifacts-${AWS::AccountId}-${Environment}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 90
+
+  # ============================================================
+  # Task Definition
+  # ============================================================
   ApiTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
-      Family: churn-api-task
+      Family: !Sub churn-api-task-${Environment}
       Cpu: '512'
       Memory: '1024'
       NetworkMode: awsvpc
       RequiresCompatibilities:
         - FARGATE
       ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
       ContainerDefinitions:
         - Name: churn-api
           Image: !Ref ImageUrl
           PortMappings:
             - ContainerPort: 8000
+              Protocol: tcp
           Environment:
             - Name: DATABASE_URL
-              Value: "{{resolve:secretsmanager:ChurnDBCredentials:SecretString:url}}" # Mock secrets manager resolution
+              Value: !Sub postgresql+psycopg2://{{resolve:secretsmanager:ChurnDBCredentials:SecretString:username}}:{{resolve:secretsmanager:ChurnDBCredentials:SecretString:password}}@${DatabaseEndpoint}:${DatabasePort}/churn_db
+            - Name: MODEL_ARTIFACTS_BUCKET
+              Value: !Sub churn-model-artifacts-${AWS::AccountId}-${Environment}
+            - Name: MODEL_ARTIFACTS_KEY
+              Value: model_v1.joblib
+            - Name: API_KEY
+              Value: "{{resolve:secretsmanager:ChurnAPIKey:SecretString:key}}"
+            - Name: ENVIRONMENT
+              Value: !Ref Environment
+            - Name: RATE_LIMIT_ENABLED
+              Value: "true"
+            - Name: DATA_MINIMIZATION_ENABLED
+              Value: "true"
+            - Name: DATA_RETENTION_DAYS
+              Value: "90"
+            - Name: LOG_LEVEL
+              Value: "INFO"
           LogConfiguration:
             LogDriver: awslogs
             Options:
-              awslogs-group: /ecs/churn-api
+              awslogs-group: !Sub /ecs/churn-api-${Environment}
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: ecs
+          HealthCheck:
+            Command: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+            Interval: 30
+            Timeout: 10
+            Retries: 3
+            StartPeriod: 60
 
+  # ============================================================
+  # ECS Service
+  # ============================================================
   ApiService:
     Type: AWS::ECS::Service
     Properties:
       Cluster: !Ref ChurnECSCluster
-      ServiceName: churn-api-service
+      ServiceName: !Sub churn-api-service-${Environment}
       TaskDefinition: !Ref ApiTaskDefinition
       DesiredCount: 2
       LaunchType: FARGATE
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
       NetworkConfiguration:
         AwsvpcConfiguration:
-          AssignPublicIp: ENABLED
-          Subnets: !Ref SubnetIds
+          AssignPublicIp: DISABLED
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups:
+            - !Ref ECSTaskSecurityGroup
+      LoadBalancers:
+        - ContainerName: churn-api
+          ContainerPort: 8000
+          TargetGroupArn: !Ref APITargetGroup
+      ServiceRegistries:
+        - RegistryArn: !GetAtt CloudMapService.Arn
+          Port: 8000
+          ContainerName: churn-api
+          ContainerPort: 8000
+
+  # ============================================================
+  # Service Discovery (Cloud Map)
+  # ============================================================
+  CloudMapNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: !Sub churn.local.${Environment}
+      Vpc: !Ref VpcId
+      Description: Service discovery namespace for Churn Platform
+
+  CloudMapService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: churn-api
+      NamespaceId: !Ref CloudMapNamespace
+      DnsConfig:
+        DnsRecords:
+          - Type: A
+            TTL: 60
+        RoutingPolicy: MULTIVALUE
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+
+  # ============================================================
+  # CloudWatch Log Group
+  # ============================================================
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/churn-api-${Environment}
+      RetentionInDays: 30
+      KmsKeyId: !Ref LogsEncryptionKey
+
+  LogsEncryptionKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub KMS key for CloudWatch Logs encryption - ${Environment}
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowRootFullAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+          - Sid: AllowCloudWatchLogs
+            Effect: Allow
+            Principal:
+              Service: !Sub logs.${AWS::Region}.amazonaws.com
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: '*'
+
+  # ============================================================
+  # CloudWatch Alarms
+  # ============================================================
+  HighCPUUtilizationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub churn-api-high-cpu-${Environment}
+      AlarmDescription: CPU utilization exceeded 80% for 5 minutes
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref ChurnECSCluster
+        - Name: ServiceName
+          Value: !GetAtt ApiService.ServiceName
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  HighMemoryUtilizationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub churn-api-high-memory-${Environment}
+      AlarmDescription: Memory utilization exceeded 80% for 5 minutes
+      Namespace: AWS/ECS
+      MetricName: MemoryUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref ChurnECSCluster
+        - Name: ServiceName
+          Value: !GetAtt ApiService.ServiceName
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  ALB5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub churn-alb-5xx-${Environment}
+      AlarmDescription: ALB 5xx errors detected
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ALB.LoadBalancerFullName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  TaskStoppedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub churn-api-tasks-stopped-${Environment}
+      AlarmDescription: ECS tasks stopped unexpectedly
+      Namespace: AWS/ECS
+      MetricName: RunningTaskCount
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref ChurnECSCluster
+        - Name: ServiceName
+          Value: !GetAtt ApiService.ServiceName
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+
+Conditions: {}
+
+Outputs:
+  ClusterName:
+    Description: ECS Cluster name
+    Value: !Ref ChurnECSCluster
+    Export:
+      Name: !Sub ${AWS::StackName}-ClusterName
+
+  ClusterArn:
+    Description: ECS Cluster ARN
+    Value: !GetAtt ChurnECSCluster.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-ClusterArn
+
+  ALBDNSName:
+    Description: ALB DNS Name
+    Value: !GetAtt ALB.DNSName
+    Export:
+      Name: !Sub ${AWS::StackName}-ALBDNSName
+
+  ALBArn:
+    Description: ALB ARN
+    Value: !Ref ALB
+    Export:
+      Name: !Sub ${AWS::StackName}-ALBArn
+
+  APITargetGroupArn:
+    Description: API Target Group ARN
+    Value: !Ref APITargetGroup
+    Export:
+      Name: !Sub ${AWS::StackName}-APITargetGroupArn
+
+  ModelArtifactsBucket:
+    Description: S3 Bucket for model artifacts
+    Value: !Sub churn-model-artifacts-${AWS::AccountId}-${Environment}
+    Export:
+      Name: !Sub ${AWS::StackName}-ModelArtifactsBucket
+
+  ECSTaskSecurityGroupId:
+    Description: ECS Task Security Group ID
+    Value: !Ref ECSTaskSecurityGroup
+    Export:
+      Name: !Sub ${AWS::StackName}-ECSTaskSecurityGroupId
+
+  DatabaseSecurityGroupId:
+    Description: Database Security Group ID
+    Value: !Ref DatabaseSecurityGroup
+    Export:
+      Name: !Sub ${AWS::StackName}-DatabaseSecurityGroupId
+
+  CloudMapNamespaceId:
+    Description: Cloud Map Namespace ID
+    Value: !Ref CloudMapNamespace
+    Export:
+      Name: !Sub ${AWS::StackName}-CloudMapNamespaceId
+
+  ALBSecurityGroupId:
+    Description: ALB Security Group ID
+    Value: !Ref ALBSecurityGroup
+    Export:
+      Name: !Sub ${AWS::StackName}-ALBSecurityGroupId

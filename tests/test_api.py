@@ -1,16 +1,50 @@
+import os
+
+# Use file-based SQLite for better cross-thread sharing
+import tempfile
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from src.api import app
+from src.database import Base, get_db
 from src.monitoring import check_drift_thresholds, log_request_metrics
+
+db_fd, db_path = tempfile.mkstemp(suffix='.db')
+TEST_DATABASE_URL = f"sqlite:///{db_path}"
+test_engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
+TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+
+# Create tables once for the test module
+Base.metadata.create_all(bind=test_engine)
+
+
+def override_get_db():
+    """Override database dependency for testing."""
+    db = TestSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+app.dependency_overrides[get_db] = override_get_db
 
 
 @pytest.fixture(scope="module")
 def client():
     with TestClient(app) as client:
         yield client
+
+    # Clean up dependency override after tests
+    app.dependency_overrides.clear()
+    Base.metadata.drop_all(bind=test_engine)
+    test_engine.dispose()
+    os.close(db_fd)
+    os.unlink(db_path)
 
 @pytest.fixture
 def sample_payload():
@@ -66,6 +100,42 @@ def test_predict(client, sample_payload):
     assert data["churn_prediction"] in [0, 1]
     assert "risk_segment" in data
 
+    # Verify prediction was persisted to database
+
+    from src.models import PredictionRecord
+
+    # Use the test database session directly
+    db = TestSessionLocal()
+    try:
+        # Query the prediction record
+        pred_record = db.query(PredictionRecord).filter(
+            PredictionRecord.customer_id == "1111-TEST"
+        ).first()
+        assert pred_record is not None
+        assert pred_record.customer_id == "1111-TEST"
+        assert pred_record.churn_probability == data["churn_probability"]
+        assert pred_record.churn_prediction == data["churn_prediction"]
+        assert pred_record.risk_segment == data["risk_segment"]
+        assert pred_record.model_version == data["model_version"]
+        assert pred_record.raw_features is not None
+        # Verify data minimization: customerID is in customer_id column, not raw_features
+        assert "customerID" not in pred_record.raw_features
+        # Verify minimized fields are present
+        assert "tenure" in pred_record.raw_features
+        assert pred_record.raw_features["tenure"] == 12
+        assert "Contract" in pred_record.raw_features
+        assert pred_record.raw_features["Contract"] == "Month-to-month"
+        assert "MonthlyCharges" in pred_record.raw_features
+        assert pred_record.raw_features["MonthlyCharges"] == 50.0
+        assert "InternetService" in pred_record.raw_features
+        assert pred_record.raw_features["InternetService"] == "DSL"
+        assert "TechSupport" in pred_record.raw_features
+        assert pred_record.raw_features["TechSupport"] == "Yes"
+        # Verify minimization metadata
+        assert pred_record.raw_features["_minimized"] is True
+    finally:
+        db.close()
+
 def test_predict_batch(client, sample_payload):
     payload = {"customers": [sample_payload, sample_payload]}
     response = client.post("/predict/batch", json=payload)
@@ -94,6 +164,14 @@ def test_retention_recommendation(client, sample_payload):
     assert "annual_revenue_exposure" in data
     assert "recommendations" in data
     assert isinstance(data["recommendations"], list)
+    # Validate each recommendation has the correct structure (action, reason)
+    for rec in data["recommendations"]:
+        assert "action" in rec
+        assert "reason" in rec
+        assert isinstance(rec["action"], str)
+        assert isinstance(rec["reason"], str)
+        assert len(rec["action"]) > 0
+        assert len(rec["reason"]) > 0
 
 def test_predict_invalid_schema(client):
     bad_payload = {"customerID": "bad"}

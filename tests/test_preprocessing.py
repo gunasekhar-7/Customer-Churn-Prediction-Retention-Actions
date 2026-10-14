@@ -85,8 +85,8 @@ def test_get_binary_target():
     target = get_binary_target(df)
     assert target.tolist() == [1, 0, 1]
 
-def test_cleaner_passes_arrays():
+def test_cleaner_rejects_arrays():
     cleaner = TotalChargesCleaner()
     arr = np.array([[1, 2], [3, 4]])
-    out = cleaner.transform(arr)
-    np.testing.assert_array_equal(arr, out)
+    with pytest.raises(TypeError, match="TotalChargesCleaner only accepts pandas DataFrame input"):
+        cleaner.transform(arr)
