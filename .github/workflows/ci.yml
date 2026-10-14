@@ -24,6 +24,14 @@ jobs:
         pip install -e .[dev]
         pip install pytest-cov
 
+    - name: Download dataset for testing
+      run: |
+        curl -s -o /tmp/Telco-Customer-Churn.csv https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv
+
+    - name: Build Model Artifact
+      run: |
+        python scripts/train_and_serialize.py
+
     - name: Lint with Ruff
       run: |
         ruff check .
