@@ -29,6 +29,8 @@ jobs:
         curl -s -o /tmp/Telco-Customer-Churn.csv https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv
 
     - name: Build Model Artifact
+      env:
+        PYTHONPATH: .
       run: |
         python scripts/train_and_serialize.py
 
@@ -37,6 +39,8 @@ jobs:
         ruff check .
 
     - name: Test with pytest
+      env:
+        PYTHONPATH: .
       run: |
         pytest --cov=src --cov-report=xml
 
