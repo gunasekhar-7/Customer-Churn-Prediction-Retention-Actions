@@ -107,12 +107,13 @@ def pg_session_factory(pg_engine: Engine) -> sessionmaker:
 @pytest.fixture(scope="session")
 def pg_schema(pg_engine: Engine) -> None:
     """Run migrations once per test session to establish schema.
-    
+
     This ensures the database schema is created via alembic migrations
     before any tests run, avoiding conflicts between migration tests
     and ORM-based table creation.
     """
     from alembic.config import Config
+
     from alembic import command
 
     alembic_cfg = Config("alembic.ini")
@@ -125,7 +126,7 @@ def pg_schema(pg_engine: Engine) -> None:
 @pytest.fixture
 def pg_session(pg_session_factory: sessionmaker, pg_engine: Engine, pg_schema: None) -> Generator[Session, None, None]:
     """Create a clean database session for each test.
-    
+
     Schema is created once per session via pg_schema fixture.
     This fixture only manages session lifecycle and data cleanup.
     """
