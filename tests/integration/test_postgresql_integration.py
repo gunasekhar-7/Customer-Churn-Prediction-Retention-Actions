@@ -104,7 +104,7 @@ def pg_session_factory(pg_engine: Engine) -> sessionmaker:
     return sessionmaker(autocommit=False, autoflush=False, bind=pg_engine)
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 def pg_ensure_schema(pg_engine: Engine) -> None:
     """Ensure database schema exists for tests that need it.
 
@@ -116,7 +116,7 @@ def pg_ensure_schema(pg_engine: Engine) -> None:
 
 
 @pytest.fixture
-def pg_session(pg_session_factory: sessionmaker, pg_engine: Engine) -> Generator[Session, None, None]:
+def pg_session(pg_session_factory: sessionmaker, pg_engine: Engine, pg_ensure_schema: None) -> Generator[Session, None, None]:
     """Create a clean database session for each test.
 
     Schema is ensured by pg_ensure_schema fixture.
