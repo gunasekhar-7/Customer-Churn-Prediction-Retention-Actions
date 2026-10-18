@@ -53,7 +53,9 @@ jobs:
           pip install -e .[dev]
 
       - name: Generate test model artifact
-        run: python -m scripts.create_test_artifact
+        run: |
+          python -m scripts.create_test_artifact
+          ls -la models/
 
       - name: Run pytest with coverage
         run: |
@@ -140,7 +142,9 @@ jobs:
           pip install -e .[dev]
 
       - name: Generate test model artifact
-        run: python -m scripts.create_test_artifact
+        run: |
+          python -m scripts.create_test_artifact
+          ls -la models/
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -176,7 +180,9 @@ jobs:
           pip install -e .[dev]
 
       - name: Generate test model artifact
-        run: python -m scripts.create_test_artifact
+        run: |
+          python -m scripts.create_test_artifact
+          ls -la models/
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
