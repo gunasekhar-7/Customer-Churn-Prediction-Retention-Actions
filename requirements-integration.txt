@@ -1,0 +1,7 @@
+# PostgreSQL Integration Test Requirements
+# Install with: pip install -r requirements-integration.txt
+
+testcontainers>=4.10.0
+psycopg2-binary>=2.9.9
+alembic>=1.12.0
+sqlalchemy>=2.0.0
