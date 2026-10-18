@@ -1,25 +1,34 @@
 import pytest
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
-from src.database import Base, get_db
+from src.database import (
+    dispose_engine,
+    get_db,
+    init_database,
+    set_engine,
+)
 from src.models import PredictionRecord, RetentionRecommendationRecord
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
+
 
 @pytest.fixture(scope="module")
 def engine():
     return create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 
+
 @pytest.fixture(scope="module")
 def tables(engine):
-    Base.metadata.create_all(bind=engine)
+    set_engine(engine)
+    init_database()
     yield
-    Base.metadata.drop_all(bind=engine)
+    dispose_engine()
+
 
 @pytest.fixture
 def db_session(engine, tables):
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    from src.database import get_session_factory
+    SessionLocal = get_session_factory()
     session = SessionLocal()
     yield session
     session.close()

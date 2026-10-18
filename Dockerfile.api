@@ -6,6 +6,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -16,9 +17,18 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Copy application code
 COPY src/ /app/src/
-COPY models/ /app/models/
 COPY alembic.ini /app/alembic.ini
 COPY alembic/ /app/alembic/
+
+# Create models directory (the folder is gitignored, may not exist in clean checkout)
+# In production, artifact is loaded from S3 via MODEL_ARTIFACTS_BUCKET/KEY
+# In CI, test artifact is generated before Docker build
+RUN mkdir -p /app/models
+COPY models/ /app/models/
+
+# Copy entrypoint script
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
 # Create a non-root user and switch to it
 RUN useradd -m apiuser && chown -R apiuser:apiuser /app
@@ -27,5 +37,9 @@ USER apiuser
 # Expose port
 EXPOSE 8000
 
-# Run migrations and start server
-CMD ["sh", "-c", "alembic upgrade head && uvicorn src.api:app --host 0.0.0.0 --port 8000"]
+# Entrypoint runs migrations then starts the application
+ENTRYPOINT ["/docker-entrypoint.sh"]
+
+# Default command starts the Uvicorn server
+# Settings are loaded from environment variables via src.config.Settings
+CMD ["uvicorn", "src.api:app", "--host", "${API_HOST:-0.0.0.0}", "--port", "${API_PORT:-8000}", "--workers", "${API_WORKERS:-2}", "--keep-alive-timeout", "${UVICORN_KEEP_ALIVE_TIMEOUT:-75}", "--timeout-keep-alive", "${UVICORN_KEEP_ALIVE_TIMEOUT:-75}", "--limit-concurrency", "${UVICORN_LIMIT_CONCURRENCY:-1000}", "--backlog", "${UVICORN_BACKLOG:-2048}", "--log-level", "${LOG_LEVEL:-info}", "--access-log", "--proxy-headers", "--forwarded-allow-ips=*"]
