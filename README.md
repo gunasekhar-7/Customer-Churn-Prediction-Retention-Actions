@@ -103,11 +103,21 @@ streamlit run dashboard/app.py
 ```
 
 ## 7. Testing Coverage
-The platform maintains **97% Line Coverage** across the `src/` directory.
+The platform maintains **92% Line Coverage** across the `src/` directory (minimum 90% enforced in CI).
 Run the suite locally using:
 ```bash
 pip install -e .[dev]
-pytest --cov=src
+pytest --cov=src --cov-fail-under=90
+ruff check .
+mypy src/
+```
+
+## 7. Testing Coverage
+The platform maintains **92% Line Coverage** across the `src/` directory (minimum 90% enforced in CI).
+Run the suite locally using:
+```bash
+pip install -e .[dev]
+pytest --cov=src --cov-fail-under=90
 ruff check .
 mypy src/
 ```
@@ -134,7 +144,37 @@ python scripts/cleanup_retention.py --stats-only
 python scripts/cleanup_retention.py --retention-days 180
 ```
 
-## 9. Limitations & Caveats
+## 9. Continuous Integration
+The project uses GitHub Actions for CI. The workflow runs on every push and pull request to `main` and `develop` branches.
+
+### CI Pipeline Stages
+1. **Lint & Type Check** - Runs `ruff check .` and `mypy src/`
+2. **Tests with Coverage** - Runs pytest with `--cov=src --cov-fail-under=90`
+3. **Docker Build (API)** - Builds `Dockerfile.api`
+4. **Docker Build (Dashboard)** - Builds `Dockerfile.dashboard`
+
+### Running CI Locally
+```bash
+# Install dev dependencies
+pip install -e .[dev]
+
+# Generate test model artifact (required for API tests)
+python -m scripts.create_test_artifact
+
+# Run all CI checks
+ruff check .
+mypy src/
+pytest --cov=src --cov-fail-under=90
+```
+
+### GitHub Actions Workflow
+The workflow is defined in `.github/workflows/ci.yml` and includes:
+- Parallel execution of lint/type-check, tests, and Docker builds
+- Coverage reporting with 90% minimum threshold
+- Docker layer caching via GitHub Actions cache
+- Proper failure handling - any failed check fails the entire workflow
+
+## 10. Limitations & Caveats
 *   **Dataset Limitations:** The IBM Telco dataset lacks continuous behavioral data (e.g., login frequency, customer support tickets over time). Our retention recommendations are limited to static demographic/contract triggers.
 *   **Model Persistence:** Currently, the artifact is built via script and committed to the file structure locally. In a full cloud production environment, the FastAPI app should pull the latest `joblib` artifact directly from AWS S3 upon startup to reduce container image bloat.
 *   **Rate Limiting Backend:** Current implementation uses in-memory rate limiting (SlowAPI default). For multi-worker or distributed deployments, configure a shared backend (Redis) via SlowAPI's `RedisStorage`.

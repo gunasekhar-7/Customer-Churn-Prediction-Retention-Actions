@@ -18,6 +18,19 @@ services:
       timeout: 5s
       retries: 5
 
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: churn_migrate
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgrespassword@db:5432/churn_db
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["alembic", "upgrade", "head"]
+    # This service runs once and exits - it does not run the API server
+
   api:
     build:
       context: .
@@ -25,11 +38,13 @@ services:
     container_name: churn_api
     environment:
       - DATABASE_URL=postgresql://postgres:postgrespassword@db:5432/churn_db
+      - API_KEY=dev-api-key-min-32-chars-long
+      - API_KEY_HEADER=X-API-Key
     ports:
       - "8000:8000"
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     volumes:
       # Mount models folder in case we want to swap artifacts without rebuilding
       - ./models:/app/models
@@ -38,6 +53,8 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    # Override entrypoint to skip migrations (handled by migrate service)
+    entrypoint: []
 
   dashboard:
     build:
@@ -46,6 +63,8 @@ services:
     container_name: churn_dashboard
     environment:
       - API_URL=http://api:8000
+      - API_KEY=dev-api-key-min-32-chars-long
+      - API_KEY_HEADER=X-API-Key
     ports:
       - "8501:8501"
     depends_on:
