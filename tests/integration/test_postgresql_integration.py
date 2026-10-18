@@ -104,12 +104,31 @@ def pg_session_factory(pg_engine: Engine) -> sessionmaker:
     return sessionmaker(autocommit=False, autoflush=False, bind=pg_engine)
 
 
-@pytest.fixture
-def pg_session(pg_session_factory: sessionmaker, pg_engine: Engine) -> Generator[Session, None, None]:
-    """Create a clean database session for each test."""
-    # Ensure tables exist
-    Base.metadata.create_all(bind=pg_engine)
+@pytest.fixture(scope="session")
+def pg_schema(pg_engine: Engine) -> None:
+    """Run migrations once per test session to establish schema.
+    
+    This ensures the database schema is created via alembic migrations
+    before any tests run, avoiding conflicts between migration tests
+    and ORM-based table creation.
+    """
+    from alembic.config import Config
+    from alembic import command
 
+    alembic_cfg = Config("alembic.ini")
+    alembic_cfg.set_main_option("sqlalchemy.url", str(pg_engine.url))
+
+    # Run migrations to head
+    command.upgrade(alembic_cfg, "head")
+
+
+@pytest.fixture
+def pg_session(pg_session_factory: sessionmaker, pg_engine: Engine, pg_schema: None) -> Generator[Session, None, None]:
+    """Create a clean database session for each test.
+    
+    Schema is created once per session via pg_schema fixture.
+    This fixture only manages session lifecycle and data cleanup.
+    """
     session = pg_session_factory()
     try:
         yield session
@@ -117,8 +136,15 @@ def pg_session(pg_session_factory: sessionmaker, pg_engine: Engine) -> Generator
         session.rollback()
         session.close()
 
-    # Clean up tables after test
-    Base.metadata.drop_all(bind=pg_engine)
+    # Clean up data after test by truncating tables (preserves schema)
+    # Get table names in reverse order for foreign key constraints
+    inspector = sa.inspect(pg_engine)
+    table_names = inspector.get_table_names()
+    if table_names:
+        with pg_engine.connect() as conn:
+            for table in reversed(table_names):
+                conn.execute(sa.text(f'TRUNCATE TABLE "{table}" RESTART IDENTITY CASCADE'))
+            conn.commit()
 
 
 @pytest.fixture
