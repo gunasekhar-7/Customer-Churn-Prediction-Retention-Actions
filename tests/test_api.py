@@ -1,6 +1,6 @@
+import atexit
 import os
 import tempfile
-import atexit
 from unittest.mock import patch
 
 import pytest
@@ -26,23 +26,24 @@ def cleanup_test_db():
 atexit.register(cleanup_test_db)
 
 # Now import alembic
-from alembic.config import Config as AlembicConfig
-from alembic import command
+from alembic.config import Config as AlembicConfig  # noqa: E402
+
+from alembic import command  # noqa: E402
 
 
 def get_test_engine():
     """Create a fresh test engine with a unique database file and run migrations."""
     engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
-    
+
     # Run alembic migrations
     alembic_cfg = AlembicConfig("alembic.ini")
     alembic_cfg.set_main_option("sqlalchemy.url", TEST_DATABASE_URL)
     command.upgrade(alembic_cfg, "head")
-    
+
     # Override the app's engine to use the test engine
     from src.database import set_engine
     set_engine(engine)
-    
+
     return engine, TEST_DB_PATH
 
 
@@ -133,8 +134,8 @@ def test_predict(client, sample_payload):
 
     # Verify prediction was persisted to database
 
-    from src.models import PredictionRecord
     from src.data_protection import pseudonymize_customer_id
+    from src.models import PredictionRecord
 
     # Use the test database session directly
     db = TestSessionLocal()
@@ -257,11 +258,12 @@ def test_api_model_info_not_loaded(client):
 def test_log_request_metrics():
     """Test that log_request_metrics logs the correct structured data."""
     from unittest.mock import patch
+
     from src.monitoring import logger as monitoring_logger
-    
+
     with patch.object(monitoring_logger, 'info') as mock_info:
         log_request_metrics("/test", 12.3, 200, {"extra": "data"})
-        
+
         # Verify logger.info was called with JSON containing expected fields
         mock_info.assert_called_once()
         call_args = mock_info.call_args[0][0]

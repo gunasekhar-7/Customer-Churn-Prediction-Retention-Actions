@@ -130,8 +130,8 @@ def generate_model_card(artifact: Dict[str, Any]) -> str:
 
     card = f"""# Model Card: Customer Churn Prediction
 
-> **Generated**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  
-> **Artifact SHA-256**: `{artifact_sha256}`  
+> **Generated**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+> **Artifact SHA-256**: `{artifact_sha256}`
 > **Version**: {version}
 
 ---

@@ -25,7 +25,7 @@ class TotalChargesCleaner(BaseEstimator, TransformerMixin):
         X_copy = X.copy()
         if 'TotalCharges' in X_copy.columns:
             X_copy['TotalCharges'] = pd.to_numeric(
-                X_copy['TotalCharges'].replace(r'^\s*$', np.nan, regex=True)
+                X_copy['TotalCharges'].replace(r'^\s*$', np.nan, regex=True)  # type: ignore[call-overload]
             )
         return X_copy
 

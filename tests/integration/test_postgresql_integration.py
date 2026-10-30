@@ -167,6 +167,9 @@ class TestPostgreSQLMigrations:
         from alembic.script import ScriptDirectory
         _ = ScriptDirectory.from_config(alembic_cfg).get_current_head()
 
+        # Drop existing tables before testing migration from base
+        Base.metadata.drop_all(bind=pg_engine)
+
         # Stamp to base (no migrations applied)
         command.stamp(alembic_cfg, "base")
 
