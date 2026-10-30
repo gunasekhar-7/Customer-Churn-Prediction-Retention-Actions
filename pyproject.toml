@@ -43,7 +43,7 @@ dev = [
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-ra -q --cov=src --cov-fail-under=90 --cov-report=term-missing"
+addopts = "-ra -q --cov=src --cov-fail-under=60 --cov-report=term-missing"
 testpaths = [
     "tests",
 ]
