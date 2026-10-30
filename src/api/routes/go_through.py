@@ -294,7 +294,7 @@ def go_through_workflow_status(
         total_predictions = db.query(func.count(PredictionRecord.id)).scalar() or 0
 
         # Get risk segment distribution
-        risk_counts = db.query(
+        risk_counts: list[Any] = db.query(
             PredictionRecord.risk_segment,
             func.count(PredictionRecord.customer_id_hash).label("count")
         ).group_by(PredictionRecord.risk_segment).all()
@@ -305,7 +305,7 @@ def go_through_workflow_status(
         from datetime import datetime, timedelta
         recent_cutoff = datetime.utcnow() - timedelta(hours=24)
         recent_predictions = db.query(func.count(PredictionRecord.id)).filter(
-            PredictionRecord.created_at >= recent_cutoff
+            PredictionRecord.created_at >= recent_cutoff  # type: ignore[arg-type]
         ).scalar() or 0
 
         return {

@@ -618,7 +618,7 @@ def dashboard_metrics(request: Request, db: Session = Depends(get_db), api_key: 
         total_customers = db.query(func.count(func.distinct(PredictionRecord.customer_id_hash))).scalar() or 0
 
         # Get risk segment counts
-        risk_counts = db.query(
+        risk_counts: list[Any] = db.query(
             PredictionRecord.risk_segment,
             func.count(func.distinct(PredictionRecord.customer_id_hash))
         ).group_by(PredictionRecord.risk_segment).all()
@@ -630,12 +630,12 @@ def dashboard_metrics(request: Request, db: Session = Depends(get_db), api_key: 
 
         # Calculate revenue at risk (sum of monthly charges * 12 for high/medium risk)
         # We need to get the latest prediction for each customer with their features
-        subquery = db.query(
+        subquery: Any = db.query(
             PredictionRecord.customer_id_hash,
             func.max(PredictionRecord.created_at).label('max_created_at')
         ).group_by(PredictionRecord.customer_id_hash).subquery()
 
-        latest_predictions = db.query(PredictionRecord).join(
+        latest_predictions: list[Any] = db.query(PredictionRecord).join(
             subquery,
             (PredictionRecord.customer_id_hash == subquery.c.customer_id_hash) &
             (PredictionRecord.created_at == subquery.c.max_created_at)
