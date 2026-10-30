@@ -4,6 +4,8 @@ Provides endpoints for the go/through customer journey analysis workflow,
 including navigation, feature exploration, and SHAP visualization paths.
 """
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
@@ -79,7 +81,7 @@ def go_through_customer_detail(
         }
 
     # Get raw features with minimization
-    raw_features = prediction.raw_features or {}
+    raw_features: dict[str, Any] = dict(prediction.raw_features) if prediction.raw_features else {}
     minimized = get_minimized_features(raw_features)
 
     # Build response

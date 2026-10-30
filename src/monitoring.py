@@ -16,7 +16,6 @@ import hmac
 import json
 import logging
 import threading
-import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -351,6 +350,7 @@ class MonitoringService:
         self.detector = PopulationDriftDetector(self.config)
         self._task: Optional[threading.Thread] = None
         self._running = False
+        self._stop_event = threading.Event()
         # Webhook configuration
         self.webhook_url = webhook_url
         self.webhook_secret = webhook_secret
@@ -361,6 +361,7 @@ class MonitoringService:
         if self._running:
             return
         self._running = True
+        self._stop_event.clear()
         self._task = threading.Thread(target=self._run_loop, daemon=True)
         self._task.start()
         logger.info("MonitoringService started")
@@ -368,6 +369,7 @@ class MonitoringService:
     def stop(self) -> None:
         """Stop the background monitoring thread."""
         self._running = False
+        self._stop_event.set()
         if self._task:
             self._task.join(timeout=10)
         logger.info("MonitoringService stopped")
@@ -395,7 +397,8 @@ class MonitoringService:
                         )
             except Exception as e:
                 logger.error(f"Monitoring loop error: {e}")
-            time.sleep(60)  # Check every minute if evaluation is due
+            if self._stop_event.wait(timeout=60):
+                break
 
 
 

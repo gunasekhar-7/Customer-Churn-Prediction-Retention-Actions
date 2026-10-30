@@ -48,6 +48,9 @@ addopts = "-ra -q --tb=short -q"
 testpaths = [
     "tests",
 ]
+pythonpath = [
+    ".",
+]
 markers = [
     "slow: long-running tests (real-time retry/backoff timing) excluded from fast local runs via -m 'not slow'",
 ]

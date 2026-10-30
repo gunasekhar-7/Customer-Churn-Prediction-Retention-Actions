@@ -38,7 +38,7 @@ def validate_dataframe_schema(
 
     for i, record in enumerate(records):
         try:
-            schema_class(**record)
+            schema_class(**{str(k): v for k, v in record.items()})
         except ValidationError as e:
             errors.append({
                 "row_index": i,

@@ -26,6 +26,7 @@ BASE_TIMEOUT = 10.0
 IDEMPOTENT_ENDPOINTS = {
     "/health",
     "/model/info",
+    "/explain",
 }
 
 # Non-idempotent endpoints that should NOT be retried automatically
@@ -332,8 +333,8 @@ def predict_batch(customers_data: List[Dict[str, Any]]) -> Dict[str, Any]:
 def explain(customer_data: Dict[str, Any]) -> Dict[str, Any]:
     """Get SHAP explanation for a customer.
 
-    This is a NON-IDEMPOTENT operation (POST to /explain).
-    Retries are NOT performed for this endpoint to avoid duplicate explanations.
+    This is an IDEMPOTENT operation (POST to /explain).
+    Retries are performed on retryable errors.
 
     Args:
         customer_data: Customer feature data
@@ -351,7 +352,6 @@ def explain(customer_data: Dict[str, Any]) -> Dict[str, Any]:
         "/explain",
         json=customer_data,
         timeout=10.0,
-        max_retries=0,
     )
     return response.json()  # type: ignore[no-any-return]
 

@@ -34,6 +34,6 @@ def get_categorical_summary(df: pd.DataFrame) -> Dict[str, Dict[str, int]]:
 
     for col in categorical_df.columns:
         if categorical_df[col].nunique() <= 50:
-            summary[col] = categorical_df[col].value_counts().to_dict()
+            summary[col] = {str(k): int(v) for k, v in categorical_df[col].value_counts().to_dict().items()}
 
     return summary

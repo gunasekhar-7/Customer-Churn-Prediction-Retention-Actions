@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session, declarative_base, sessionmaker
 from src.config import get_settings
 
 # Thread-safe lazy initialization
-_engine_lock = threading.Lock()
+_engine_lock = threading.RLock()
 _engine: Optional[Engine] = None
 _session_factory: Optional[sessionmaker] = None
 

@@ -21,11 +21,12 @@ class TestLogRequestMetrics:
 
     def test_log_request_metrics_basic(self):
         from unittest.mock import patch
+
         from src.monitoring import logger as monitoring_logger
-        
+
         with patch.object(monitoring_logger, 'info') as mock_info:
             log_request_metrics("/test", 12.3, 200, {"extra": "data"})
-            
+
             mock_info.assert_called_once()
             call_args = mock_info.call_args[0][0]
             assert "api_request" in call_args
@@ -42,11 +43,12 @@ class TestLogRequestMetrics:
 
     def test_log_request_metrics_no_extra(self):
         from unittest.mock import patch
+
         from src.monitoring import logger as monitoring_logger
-        
+
         with patch.object(monitoring_logger, 'info') as mock_info:
             log_request_metrics("/health", 5.0, 200)
-            
+
             mock_info.assert_called_once()
             call_args = mock_info.call_args[0][0]
             assert "api_request" in call_args

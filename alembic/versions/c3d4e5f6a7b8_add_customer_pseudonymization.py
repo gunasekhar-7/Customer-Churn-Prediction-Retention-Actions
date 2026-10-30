@@ -26,7 +26,7 @@ def upgrade() -> None:
         sa.Column('customer_id_hash', sa.String(length=64), nullable=True)
     )
     op.create_index(op.f('ix_prediction_records_customer_id_hash'), 'prediction_records', ['customer_id_hash'], unique=False)
-    
+
     # Create customer_pseudonym_lookup table
     op.create_table('customer_pseudonym_lookup',
         sa.Column('id', sa.Integer(), nullable=False),
