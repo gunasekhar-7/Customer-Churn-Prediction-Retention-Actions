@@ -39,7 +39,10 @@ dev = [
     "httpx>=0.25.0",
     "ruff>=0.1.0",
     "mypy>=1.6.0",
-    "tenacity>=8.0.0"
+    "tenacity>=8.0.0",
+    "pytest-httpserver>=1.0.8",
+    "werkzeug>=2.0.0",
+    "matplotlib>=3.7.0"
 ]
 
 [tool.pytest.ini_options]
