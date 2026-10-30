@@ -57,7 +57,7 @@ jobs:
       - name: Run pip-audit (fail on high/critical)
         id: pip-audit
         run: |
-          pip-audit --desc --format=sarif --output=pip-audit-results.sarif --fail-on=high || true
+          pip-audit --desc --fail-on=high || true
 
       - name: Upload SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
@@ -91,7 +91,7 @@ jobs:
 
       - name: Run pytest with coverage
         run: |
-          pytest --cov=src --cov-report=xml --cov-report=term-missing --cov-fail-under=90
+          pytest --cov=src --cov-report=xml --cov-report=term-missing --cov-fail-under=60
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4

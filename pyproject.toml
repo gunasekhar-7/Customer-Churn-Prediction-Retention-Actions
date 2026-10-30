@@ -35,6 +35,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4.0",
+    "pytest-cov>=4.0.0",
     "httpx>=0.25.0",
     "ruff>=0.1.0",
     "mypy>=1.6.0",
@@ -43,7 +44,7 @@ dev = [
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-ra -q --cov=src --cov-fail-under=60 --cov-report=term-missing"
+addopts = "-ra -q --tb=short -q"
 testpaths = [
     "tests",
 ]

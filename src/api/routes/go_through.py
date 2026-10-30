@@ -7,26 +7,26 @@ including navigation, feature exploration, and SHAP visualization paths.
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
+from src.data_protection import (
+    create_prediction_record,
+    get_minimized_features,
+    pseudonymize_customer_id,
+)
 from src.database import get_db
+from src.explainability import get_local_explanation
+from src.inference import predict_with_threshold
+from src.retention_intelligence import (
+    estimate_revenue_exposure,
+    generate_retention_recommendations,
+    segment_risk,
+)
 from src.schema import (
-    DashboardMetricsResponse,
     ExplainResponse,
     PredictionResponse,
     RecommendationAction,
     RetentionResponse,
     TelcoCustomerFeatures,
 )
-from src.retention_intelligence import (
-    estimate_revenue_exposure,
-    generate_retention_recommendations,
-    segment_risk,
-)
-from src.explainability import get_local_explanation
-from src.inference import predict_with_threshold
-from src.model_management import get_current_model_version, load_model_artifact
-from src.monitoring import MonitoringService, log_request_metrics
-from src.config import get_settings
-from src.data_protection import get_minimized_features, create_prediction_record, pseudonymize_customer_id
 
 router = APIRouter(prefix="/go/through", tags=["go/through"])
 
@@ -44,7 +44,7 @@ def go_through_health_check() -> dict[str, str]:
 @router.get("/customer/{customer_id}", tags=["go/through"], response_model=None)
 def go_through_customer_detail(
     customer_id: str,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db),  # noqa: B008
 ) -> dict:
     """Get go/through details for a specific customer.
 
@@ -59,7 +59,6 @@ def go_through_customer_detail(
         Dictionary with customer prediction and explanation data
     """
     from src.models import PredictionRecord
-    from src.data_protection import pseudonymize_customer_id
 
     # Get the customer's latest prediction
     customer_id_hash = pseudonymize_customer_id(customer_id)
@@ -105,7 +104,7 @@ def go_through_customer_detail(
 @router.post("/predict", response_model=None, tags=["go/through"])
 def go_through_predict(
     record: TelcoCustomerFeatures,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db),  # noqa: B008
 ) -> PredictionResponse:
     """Make a churn prediction as part of the go/through workflow.
 
@@ -121,8 +120,7 @@ def go_through_predict(
     """
     import pandas as pd
 
-    from src.api import app_state
-    from src.api import predict_with_threshold, segment_risk
+    from src.api import app_state, predict_with_threshold, segment_risk
 
     df = pd.DataFrame([record.model_dump()])
 
@@ -197,7 +195,6 @@ def go_through_explain(
     import pandas as pd
 
     from src.api import app_state
-    from src.explainability import get_local_explanation
 
     df = pd.DataFrame([record.model_dump()])
 
@@ -235,12 +232,6 @@ def go_through_retention_recommendation(
     import pandas as pd
 
     from src.api import app_state
-    from src.explainability import get_local_explanation
-    from src.retention_intelligence import (
-        generate_retention_recommendations,
-        segment_risk,
-        estimate_revenue_exposure,
-    )
 
     df = pd.DataFrame([record.model_dump()])
     raw_data = record.model_dump()
@@ -278,7 +269,7 @@ def go_through_retention_recommendation(
 @router.get("/workflow-status", tags=["go/through"])
 def go_through_workflow_status(
     request: Request,
-    db: Session = Depends(get_db),
+    db: Session = Depends(get_db),  # noqa: B008
 ) -> dict:
     """Get go/through workflow status and metrics.
 
@@ -293,6 +284,7 @@ def go_through_workflow_status(
         Dictionary with workflow status metrics
     """
     from sqlalchemy import func
+
     from src.models import PredictionRecord
 
     try:
@@ -324,3 +316,4 @@ def go_through_workflow_status(
 
     except Exception as e:
         raise Exception(f"Workflow status error: {str(e)}") from e
+
