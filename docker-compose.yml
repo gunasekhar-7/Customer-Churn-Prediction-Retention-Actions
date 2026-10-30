@@ -1,12 +1,25 @@
 
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: churn_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis_data:/data
+
   db:
     image: postgres:15-alpine
     container_name: churn_db
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_PASSWORD: postgrespassword  # OVERRIDE IN PRODUCTION - use strong secret via env var / secret manager
       POSTGRES_DB: churn_db
     ports:
       - "5432:5432"
@@ -38,6 +51,7 @@ services:
     container_name: churn_api
     environment:
       - DATABASE_URL=postgresql://postgres:postgrespassword@db:5432/churn_db
+      - REDIS_URL=redis://redis:6379/0
       - API_KEY=dev-api-key-min-32-chars-long
       - API_KEY_HEADER=X-API-Key
     ports:
@@ -45,6 +59,8 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     volumes:
       # Mount models folder in case we want to swap artifacts without rebuilding
       - ./models:/app/models
@@ -78,3 +94,4 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:

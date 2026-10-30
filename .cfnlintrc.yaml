@@ -1,0 +1,10 @@
+# cfn-lint configuration for this repository.
+#
+# W1030 fires on the DatabaseSecretArn parameter inside the TaskExecutionRole
+# secret policy: that parameter intentionally defaults to '' so that
+# DatabaseMode=create can omit it, and cfn-lint resolves the default while
+# checking IAM policy resources against an ARN pattern. The template's Rules
+# section asserts that a real ARN is supplied whenever DatabaseMode=external,
+# so the empty default can never reach a deployed policy statement.
+ignore_checks:
+  - W1030

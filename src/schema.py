@@ -1,9 +1,15 @@
-from typing import List, Literal, Optional, Union
+﻿from typing import List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
 
-class TelcoCustomerRecord(BaseModel):
+class TelcoCustomerFeatures(BaseModel):
+    """
+    Customer features for inference - does NOT include the target label (Churn).
+    Use this schema for prediction, explanation, and retention recommendation endpoints.
+    """
+    model_config = {"extra": "forbid"}
+
     customerID: str
     gender: Literal["Female", "Male"]
     SeniorCitizen: Literal[0, 1]
@@ -29,7 +35,15 @@ class TelcoCustomerRecord(BaseModel):
     ]
     MonthlyCharges: float = Field(ge=0.0)
     TotalCharges: Union[float, str]
-    Churn: Optional[Literal["Yes", "No"]] = None
+
+
+class TelcoCustomerRecord(TelcoCustomerFeatures):
+    """
+    Complete customer record including the target label (Churn).
+    Use this schema for training data ingestion and validation.
+    """
+    Churn: Literal["Yes", "No"]
+
 
 class PredictionResponse(BaseModel):
     customerID: str
@@ -38,27 +52,70 @@ class PredictionResponse(BaseModel):
     risk_segment: str
     model_version: str
 
+
 class BatchPredictionRequest(BaseModel):
-    customers: List[TelcoCustomerRecord]
+    customers: List[TelcoCustomerFeatures]
+
 
 class BatchPredictionResponse(BaseModel):
     predictions: List[PredictionResponse]
 
+
 class FeatureContribution(BaseModel):
     name: str
     contribution: float
+
 
 class ExplainResponse(BaseModel):
     customerID: str
     base_value: float
     features: List[FeatureContribution]
 
+
 class RecommendationAction(BaseModel):
     action: str
     reason: str
+
 
 class RetentionResponse(BaseModel):
     customerID: str
     risk_segment: str
     annual_revenue_exposure: float
     recommendations: List[RecommendationAction]
+
+
+class DashboardMetricsResponse(BaseModel):
+    total_customers: int
+    high_risk_customers: int
+    medium_risk_customers: int
+    low_risk_customers: int
+    annual_revenue_at_risk: float
+    risk_distribution: dict
+
+
+class ModelVersionInfo(BaseModel):
+    """Information about a single model version."""
+    version: str
+    threshold: float
+    timestamp: str
+    test_roc_auc: Optional[float] = None
+    test_recall: Optional[float] = None
+    test_precision: Optional[float] = None
+    is_current: bool = False
+
+
+class ModelVersionsResponse(BaseModel):
+    """Response for /model/versions endpoint."""
+    versions: List[ModelVersionInfo]
+    current_version: Optional[str] = None
+
+
+class ModelCurrentResponse(BaseModel):
+    """Response for /model/current endpoint."""
+    version: str
+    threshold: float
+    timestamp: str
+    test_roc_auc: Optional[float] = None
+    test_recall: Optional[float] = None
+    test_precision: Optional[float] = None
+    feature_count: int

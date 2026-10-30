@@ -1,4 +1,8 @@
-"""Script to create a minimal test model artifact for API testing."""
+"""Script to create a minimal test model artifact for API testing.
+
+This artifact is explicitly marked as a TEST artifact (version ends with '-test')
+and will be rejected by production model loading code.
+"""
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
@@ -59,10 +63,51 @@ def run():
     model = LogisticRegression(class_weight="balanced", max_iter=1000, random_state=42)
     model.fit(X_transformed, y)
 
-    # 4. Serialize Model Artifact
+    # 4. Generate minimal reference predictions for drift monitoring
+    # Use a subset of training predictions as reference
+    ref_probs = model.predict_proba(X_transformed)[:, 1].tolist()
+
+    # 5. Serialize Model Artifact with test metadata
+    # Save to default path so tests can load it (TestClient triggers lifespan)
     filepath = "models/model_v1.joblib"
+    # Also save to test-specific path for test_test_artifact_on_disk_rejected_for_production
+    test_filepath = "models/model_v1_test.joblib"
     threshold = 0.65
     version = "1.0.0-test"
+
+    test_metadata = {
+        "threshold_metadata": {
+            "selection_rule": "test_fixed_threshold",
+            "min_recall_requirement": 0.70,
+            "selected_threshold": threshold,
+            "selected_precision": 0.0,
+            "selected_recall": 0.0,
+            "selected_f1": 0.0,
+            "threshold_candidates": [],
+            "fallback_used": True
+        },
+        "test_metrics": {
+            "roc_auc": 0.5,
+            "pr_auc": 0.26,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "confusion_matrix": [[0, 0], [0, 0]]
+        },
+        "reference_predictions": ref_probs,
+        "timestamp": pd.Timestamp.now().isoformat(),
+        "training_config": {
+            "model_type": "LogisticRegression",
+            "class_weight": "balanced",
+            "max_iter": 1000,
+            "random_state": 42,
+            "train_samples": n_samples,
+            "val_samples": 0,
+            "test_samples": 0,
+            "min_recall_requirement": 0.70,
+            "is_test_artifact": True
+        }
+    }
 
     print(f"Serializing artifact to {filepath}...")
     serialize_model(
@@ -71,10 +116,27 @@ def run():
         feature_names=feature_names,
         threshold=threshold,
         version=version,
-        filepath=filepath
+        filepath=filepath,
+        metadata=test_metadata,
+        is_test_artifact=True
+    )
+
+    print(f"Serializing artifact to {test_filepath}...")
+    serialize_model(
+        model=model,
+        preprocessor=preprocessor,
+        feature_names=feature_names,
+        threshold=threshold,
+        version=version,
+        filepath=test_filepath,
+        metadata=test_metadata,
+        is_test_artifact=True
     )
 
     print("Test artifact creation complete.")
+    print(f"Created: {filepath} (version: {version})")
+    print(f"Created: {test_filepath} (version: {version})")
+    print("NOTE: This is a TEST artifact and will be REJECTED in production mode.")
 
 
 if __name__ == "__main__":

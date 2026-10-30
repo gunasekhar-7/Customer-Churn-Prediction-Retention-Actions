@@ -12,7 +12,6 @@ from src.monitoring import (
     DriftResult,
     MonitoringService,
     PopulationDriftDetector,
-    check_drift_thresholds,
     log_request_metrics,
 )
 
@@ -20,39 +19,46 @@ from src.monitoring import (
 class TestLogRequestMetrics:
     """Tests for request metrics logging."""
 
-    def test_log_request_metrics_basic(self, caplog):
-        import logging
-        with caplog.at_level(logging.INFO, logger="churn_metrics"):
+    def test_log_request_metrics_basic(self):
+        from unittest.mock import patch
+        from src.monitoring import logger as monitoring_logger
+        
+        with patch.object(monitoring_logger, 'info') as mock_info:
             log_request_metrics("/test", 12.3, 200, {"extra": "data"})
-        assert "api_request" in caplog.text
-        assert "/test" in caplog.text
-        assert "12.3" in caplog.text
-        assert "data" in caplog.text
+            
+            mock_info.assert_called_once()
+            call_args = mock_info.call_args[0][0]
+            assert "api_request" in call_args
+            assert "/test" in call_args
+            assert "12.3" in call_args
+            assert "data" in call_args
+            import json
+            parsed = json.loads(call_args)
+            assert parsed["event_type"] == "api_request"
+            assert parsed["endpoint"] == "/test"
+            assert parsed["process_time_ms"] == 12.3
+            assert parsed["status_code"] == 200
+            assert parsed["extra"] == "data"
 
-    def test_log_request_metrics_no_extra(self, caplog):
-        import logging
-        with caplog.at_level(logging.INFO, logger="churn_metrics"):
+    def test_log_request_metrics_no_extra(self):
+        from unittest.mock import patch
+        from src.monitoring import logger as monitoring_logger
+        
+        with patch.object(monitoring_logger, 'info') as mock_info:
             log_request_metrics("/health", 5.0, 200)
-        assert "api_request" in caplog.text
-        assert "/health" in caplog.text
-
-
-class TestCheckDriftThresholds:
-    """Tests for deprecated per-request drift check."""
-
-    def test_check_drift_thresholds_no_alert(self, caplog):
-        import logging
-        with caplog.at_level(logging.WARNING, logger="churn_metrics"):
-            result = check_drift_thresholds(0.3)
-        assert result is False
-        assert "drift_alert" not in caplog.text
-
-    def test_check_drift_thresholds_alert(self, caplog):
-        import logging
-        with caplog.at_level(logging.WARNING, logger="churn_metrics"):
-            result = check_drift_thresholds(0.9)
-        assert result is True
-        assert "drift_alert" in caplog.text
+            
+            mock_info.assert_called_once()
+            call_args = mock_info.call_args[0][0]
+            assert "api_request" in call_args
+            assert "/health" in call_args
+            assert "5.0" in call_args
+            import json
+            parsed = json.loads(call_args)
+            assert parsed["event_type"] == "api_request"
+            assert parsed["endpoint"] == "/health"
+            assert parsed["process_time_ms"] == 5.0
+            assert parsed["status_code"] == 200
+            assert "extra" not in parsed
 
 
 class TestDriftConfig:
@@ -280,22 +286,6 @@ class TestMonitoringService:
         service.stop()
         # Should not crash
         service.record_prediction(0.5)
-
-
-class TestDeprecatedDriftCheck:
-    """Tests for deprecated per-request drift check."""
-
-    def test_check_drift_thresholds_no_alert(self):
-        assert check_drift_thresholds(0.3) is False
-
-    def test_check_drift_thresholds_alert(self):
-        assert check_drift_thresholds(0.9) is True
-
-    def test_logs_deprecation_warning(self, caplog):
-        import logging
-        with caplog.at_level(logging.DEBUG, logger="churn_metrics"):
-            check_drift_thresholds(0.5)
-        assert "DEPRECATED" in caplog.text
 
 
 if __name__ == "__main__":

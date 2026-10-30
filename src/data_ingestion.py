@@ -1,9 +1,9 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal
 
 import pandas as pd
 from pydantic import ValidationError
 
-from src.schema import TelcoCustomerRecord
+from src.schema import TelcoCustomerFeatures, TelcoCustomerRecord
 
 
 def load_data(filepath: str) -> pd.DataFrame:
@@ -18,17 +18,27 @@ def load_data(filepath: str) -> pd.DataFrame:
     except Exception as e:
         raise ValueError(f"Error loading file {filepath}: {e}") from e
 
-def validate_dataframe_schema(df: pd.DataFrame) -> List[Dict[str, Any]]:
+def validate_dataframe_schema(
+    df: pd.DataFrame,
+    schema_type: Literal["training", "inference"] = "training"
+) -> List[Dict[str, Any]]:
     """
-    Validates a pandas DataFrame against the TelcoCustomerRecord Pydantic schema.
-    Returns a list of errors if any. Empty list means successful validation.
+    Validates a pandas DataFrame against the appropriate Pydantic schema.
+
+    Args:
+        df: DataFrame to validate
+        schema_type: "training" for records with Churn label, "inference" for features only
+
+    Returns:
+        List of errors if any. Empty list means successful validation.
     """
+    schema_class = TelcoCustomerRecord if schema_type == "training" else TelcoCustomerFeatures
     errors = []
     records = df.to_dict(orient="records")
 
     for i, record in enumerate(records):
         try:
-            TelcoCustomerRecord(**record)
+            schema_class(**record)
         except ValidationError as e:
             errors.append({
                 "row_index": i,

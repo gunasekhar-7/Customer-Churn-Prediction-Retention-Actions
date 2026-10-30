@@ -12,6 +12,7 @@ def test_segment_risk():
     assert segment_risk(0.5) == "Medium"
     assert segment_risk(0.8) == "High"
 
+
 def test_estimate_revenue_exposure():
     # 50% prob * $100 * 12 months = $600 exposure
     assert estimate_revenue_exposure(0.5, 100.0) == 600.0
@@ -22,6 +23,7 @@ def test_estimate_revenue_exposure():
         estimate_revenue_exposure(-0.1, 100)
     with pytest.raises(ValueError):
         estimate_revenue_exposure(0.5, -100)
+
 
 def test_generate_retention_recommendations():
     # Low risk bypass
@@ -63,3 +65,35 @@ def test_generate_retention_high_fallback():
     recs = generate_retention_recommendations(customer_data, 0.9, shap_features)
     assert len(recs) == 1
     assert "Trigger Personal Agent Call" in recs[0]["action"]
+
+
+def test_generate_retention_medium_fallback():
+    # Medium risk, no specific rules match -> fallback to loyalty survey
+    customer_data = {"Contract": "Two year", "InternetService": "DSL", "TechSupport": "Yes"}
+    shap_features = [{"name": "Dummy", "contribution": 0.1}]
+    recs = generate_retention_recommendations(customer_data, 0.5, shap_features)
+    assert len(recs) == 1
+    assert recs[0]["action"] == "Send Loyalty Survey"
+    assert "Survey helps identify retention needs" in recs[0]["reason"]
+    assert "proactive care" in recs[0]["reason"].lower()
+
+
+def test_generate_retention_medium_no_fallback_when_rules_match():
+    # Medium risk with matching rule -> no fallback
+    customer_data = {"Contract": "Month-to-month", "InternetService": "DSL", "TechSupport": "Yes"}
+    shap_features = [{"name": "Dummy", "contribution": 0.1}]
+    recs = generate_retention_recommendations(customer_data, 0.5, shap_features)
+    actions = [r["action"] for r in recs]
+    assert "Offer Annual Upgrade Discount" in actions
+    assert "Send Loyalty Survey" not in actions
+    assert "Trigger Personal Agent Call" not in actions
+
+
+def test_generate_retention_high_fallback_still_works():
+    # High risk with no matching rules still gets agent fallback
+    customer_data = {"Contract": "Two year", "InternetService": "DSL", "TechSupport": "Yes"}
+    shap_features = [{"name": "Dummy", "contribution": 0.1}]
+    recs = generate_retention_recommendations(customer_data, 0.9, shap_features)
+    assert len(recs) == 1
+    assert "Trigger Personal Agent Call" in recs[0]["action"]
+    assert "Send Loyalty Survey" not in [r["action"] for r in recs]

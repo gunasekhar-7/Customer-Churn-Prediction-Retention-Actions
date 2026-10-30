@@ -1,6 +1,15 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Column, DateTime, Float, ForeignKey, Index, Integer, String
+from sqlalchemy import (
+    JSON,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 
 from src.database import Base
@@ -14,12 +23,13 @@ class PredictionRecord(Base):
     __tablename__ = "prediction_records"
 
     id = Column(Integer, primary_key=True, index=True)
-    customer_id = Column(String, index=True, nullable=False)
+    customer_id_hash = Column(String(64), index=True, nullable=True)  # Salted SHA-256 pseudonym
     churn_probability = Column(Float, nullable=False)
     churn_prediction = Column(Integer, nullable=False)
     risk_segment = Column(String, nullable=False)
     model_version = Column(String, nullable=False)
-    created_at = Column(DateTime, default=utc_now, index=True)  # Indexed for retention cleanup queries
+    # Use timezone-aware DateTime for PostgreSQL, SQLite will store as UTC string
+    created_at = Column(DateTime(timezone=True), default=utc_now, index=True)
 
     # Minimized features stored as JSON for auditing/explainability
     # Contains only non-sensitive fields needed for monitoring and business logic
@@ -27,9 +37,27 @@ class PredictionRecord(Base):
 
     recommendations = relationship("RetentionRecommendationRecord", back_populates="prediction_record", cascade="all, delete-orphan")
 
-    # Composite index for efficient retention queries
+
+class CustomerPseudonymLookup(Base):
+    """
+    Lookup table for authorized customer ID de-pseudonymization.
+
+    Stores the mapping between customer_id_hash and customer_id for
+    authorized personnel to resolve pseudonyms when legally required.
+    Access to this table should be strictly controlled via RBAC.
+    """
+    __tablename__ = "customer_pseudonym_lookup"
+
+    id = Column(Integer, primary_key=True, index=True)
+    customer_id_hash = Column(String(64), unique=True, index=True, nullable=False)
+    customer_id = Column(String, nullable=False)  # Original customer ID (encrypted in production)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    last_accessed_at = Column(DateTime(timezone=True), nullable=True)
+    access_count = Column(Integer, default=0)
+
+    # Ensure one lookup entry per customer
     __table_args__ = (
-        Index('ix_prediction_records_created_at_customer_id', 'created_at', 'customer_id'),
+        UniqueConstraint('customer_id_hash', name='uq_customer_pseudonym_hash'),
     )
 
 
@@ -40,6 +68,6 @@ class RetentionRecommendationRecord(Base):
     prediction_record_id = Column(Integer, ForeignKey("prediction_records.id"), nullable=False)
     action = Column(String, nullable=False)
     reason = Column(String, nullable=False)
-    created_at = Column(DateTime, default=utc_now)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
 
     prediction_record = relationship("PredictionRecord", back_populates="recommendations")

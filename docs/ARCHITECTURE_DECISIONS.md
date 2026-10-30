@@ -44,3 +44,21 @@ This document tracks important technical decisions made during the development o
 *   **Consequences:**
     *   Cleaner separation of concerns.
     *   The API container can be kept lightweight (e.g., omitting Jupyter, EDA plotting libraries).
+
+## ADR 6: One NAT Gateway per Availability Zone
+*   **Status:** Accepted
+*   **Context:** The template originally created a single NAT Gateway in `PublicSubnetIds[0]` and one shared private route table, so both private subnets depended on one AZ for egress (audit finding: availability gap).
+*   **Decision:** Create `NatGatewayA`/`NatGatewayB` with separate EIPs and separate private route tables, each private subnet egressing through the NAT in its own AZ. The S3 gateway endpoint is attached to both route tables.
+*   **Consequences:**
+    *   Egress survives the loss of the NAT's AZ; avoids cross-AZ NAT dependency.
+    *   +≈$32.40/month (us-east-1 list, 720 h) plus $0.045/GB processed per gateway.
+    *   Does **not** provide database or regional failover; still depends on correctly AZ-aligned subnet ordering supplied as parameters (statically unverifiable).
+
+## ADR 7: Optional In-Stack RDS with Parameterised Class and Explicit Multi-AZ
+*   **Status:** Accepted
+*   **Context:** The template previously had no `AWS::RDS::DBInstance` at all (endpoint passed in), so no instance class or Multi-AZ setting could be declared or reviewed, and the audit could not evaluate database capacity or availability.
+*   **Decision:** Add `DatabaseMode` = `external` (unchanged behaviour, endpoint + secret ARN enforced by a `Rules` section) or `create` (stack provisions PostgreSQL 15 in the private subnets). Class is a parameter (`DbInstanceClass`, default `db.r6g.large` for staging), availability is a separate parameter (`DbMultiAZ`, default `true`), with `DeletionPolicy: Snapshot`.
+*   **Consequences:**
+    *   Connection budget is verifiable: 2 workers × (5+10) × 10 tasks + migration/ops = 303 vs ≈1,800 default `max_connections` on `db.r6g.large` (the old `db.t4g.micro` baseline allows only ≈112).
+    *   `DbMultiAZ=true` costs ≈2× instance and ≈2× storage; `false` is documented as explicitly single-AZ, not highly available.
+    *   Credentials generated in-stack are still handed to tasks via CloudFormation dynamic references (see ADR 7 follow-up in `docs/AWS_DEPLOYMENT.md` §10).

@@ -1,4 +1,5 @@
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
 from dashboard.api_client import get_health, predict_batch
@@ -25,8 +26,38 @@ if uploaded_file is not None:
                 result = predict_batch(records)
                 preds = result.get("predictions", [])
 
+                if not preds:
+                    st.warning("No predictions returned.")
+                    st.stop()
+
                 results_df = pd.DataFrame(preds)
-                st.dataframe(results_df)
+
+                # Summary metrics
+                total = len(results_df)
+                high_risk = len(results_df[results_df['risk_segment'] == 'High Risk'])
+                medium_risk = len(results_df[results_df['risk_segment'] == 'Medium Risk'])
+                low_risk = len(results_df[results_df['risk_segment'] == 'Low Risk'])
+                avg_prob = results_df['churn_probability'].mean()
+
+                col1, col2, col3, col4, col5 = st.columns(5)
+                col1.metric("Total Scored", total)
+                col2.metric("High Risk", high_risk, delta_color="inverse")
+                col3.metric("Medium Risk", medium_risk)
+                col4.metric("Low Risk", low_risk)
+                col5.metric("Avg Churn Probability", f"{avg_prob:.1%}")
+
+                # Risk distribution chart
+                risk_counts = results_df['risk_segment'].value_counts()
+                fig = px.bar(
+                    x=risk_counts.index,
+                    y=risk_counts.values,
+                    labels={'x': 'Risk Segment', 'y': 'Count'},
+                    color=risk_counts.index,
+                    color_discrete_map={'Low Risk': 'green', 'Medium Risk': 'orange', 'High Risk': 'red'}
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                st.dataframe(results_df, use_container_width=True)
 
                 st.download_button(
                     label="Download Predictions",

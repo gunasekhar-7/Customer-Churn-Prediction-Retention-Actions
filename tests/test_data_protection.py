@@ -56,6 +56,7 @@ def sample_customer_data():
 def db_session():
     """Create an in-memory SQLite database for testing."""
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.drop_all(bind=engine)  # Ensure clean state
     Base.metadata.create_all(bind=engine)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     session = SessionLocal()
@@ -152,6 +153,8 @@ class TestDataMinimization:
         """Test creating PredictionRecord with minimized features."""
         with patch('src.data_protection.get_settings') as mock_settings:
             mock_settings.return_value.DATA_MINIMIZATION_ENABLED = True
+            mock_settings.return_value.PSEUDONYMIZATION_ENABLED = True
+            mock_settings.return_value.PSEUDONYMIZATION_SALT = "test-salt"
             record = create_prediction_record(
                 customer_id="1234-ABCD",
                 churn_probability=0.75,
@@ -161,7 +164,9 @@ class TestDataMinimization:
                 raw_features=sample_customer_data,
             )
 
-        assert record.customer_id == "1234-ABCD"
+        import hashlib
+        expected_hash = hashlib.sha256("test-salt:1234-ABCD".encode('utf-8')).hexdigest()
+        assert record.customer_id_hash == expected_hash
         assert record.churn_probability == 0.75
         assert record.churn_prediction == 1
         assert record.risk_segment == "High"
@@ -194,11 +199,13 @@ class TestRetentionCleanup:
 
     def create_test_records(self, db_session, days_old_list):
         """Create test prediction records with specified ages."""
+        import hashlib
         records = []
         for i, days_old in enumerate(days_old_list):
             created_at = datetime.now(timezone.utc) - timedelta(days=days_old)
+            customer_id_hash = hashlib.sha256(f"test-salt:CUST-{i:04d}".encode('utf-8')).hexdigest()
             record = PredictionRecord(
-                customer_id=f"CUST-{i:04d}",
+                customer_id_hash=customer_id_hash,
                 churn_probability=0.5,
                 churn_prediction=0,
                 risk_segment="Medium",
