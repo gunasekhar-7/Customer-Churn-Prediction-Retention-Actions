@@ -128,7 +128,8 @@ class TestSettings:
             "DB_MAX_OVERFLOW": "10",
             "MODEL_ARTIFACTS_BUCKET": "test-bucket",
             "MODEL_ARTIFACTS_KEY": "model_v1.joblib",
-            "API_KEY": "a" * 32  # 32-char API key
+            "API_KEY": "a" * 32,  # 32-char API key
+            "PSEUDONYMIZATION_SALT": "a" * 32  # 32-char salt
         }, clear=True):
             settings = Settings()
             settings.validate_production_config()  # Should not raise

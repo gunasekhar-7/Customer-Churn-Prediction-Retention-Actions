@@ -63,4 +63,23 @@ def build_preprocessor() -> ColumnTransformer:
     return preprocessor
 
 def get_binary_target(df: pd.DataFrame, target_column: str = 'Churn') -> pd.Series:
-    return df[target_column].map({'Yes': 1, 'No': 0})
+    """
+    Maps the churn label to a binary target with an explicit positive class.
+
+    Encoding: 'Yes' -> 1 (customer churned, positive class), 'No' -> 0.
+
+    Raises:
+        KeyError: If the target column is absent.
+        ValueError: If any label is outside {'Yes', 'No'} (fails fast instead of
+            silently producing NaN, which would corrupt training/evaluation).
+    """
+    if target_column not in df.columns:
+        raise KeyError(f"Target column '{target_column}' not found in dataframe")
+    mapped = df[target_column].map({'Yes': 1, 'No': 0})
+    if mapped.isna().any():
+        invalid = sorted({str(v) for v in df.loc[mapped.isna(), target_column]})
+        raise ValueError(
+            f"Unrecognized label(s) in '{target_column}': {invalid}. "
+            "Expected only 'Yes' or 'No'."
+        )
+    return mapped.astype(int)

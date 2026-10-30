@@ -1,26 +1,106 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: ECS Cluster and Fargate Service definition for Customer Churn Platform - Hardened Network Configuration
+Description: >-
+  ECS Cluster and Fargate Service definition for Customer Churn Platform -
+  Hardened Network Configuration with API and Dashboard Services, dual NAT
+  Gateway egress (one per AZ) and optional in-stack RDS for PostgreSQL.
 
 Parameters:
   VpcId:
     Type: AWS::EC2::VPC::Id
-    Description: The VPC to deploy into
+    Description: The VPC to deploy into (must have at least 2 private and 2 public subnets)
   PrivateSubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
     Description: Private subnets for ECS tasks (no public IP)
+    MinLength: 2
   PublicSubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
     Description: Public subnets for ALB
-  ImageUrl:
+    MinLength: 2
+  ApiImageUrl:
     Type: String
-    Description: ECR Image URL (e.g., 123456789.dkr.ecr.us-east-1.amazonaws.com/churn-api:latest)
+    Description: ECR Image URL for API service (e.g., 123456789.dkr.ecr.us-east-1.amazonaws.com/churn-api:latest)
+  DashboardImageUrl:
+    Type: String
+    Description: ECR Image URL for Dashboard service (e.g., 123456789.dkr.ecr.us-east-1.amazonaws.com/churn-dashboard:latest)
+  DatabaseMode:
+    Type: String
+    Default: external
+    AllowedValues: [external, create]
+    Description: >-
+      external = use an existing (externally managed) RDS endpoint supplied via
+      DatabaseEndpoint/DatabaseSecretArn. create = provision an RDS for
+      PostgreSQL instance in this stack (private subnets, DB subnet group
+      spanning both private subnets).
   DatabaseEndpoint:
     Type: String
-    Description: RDS Database endpoint (hostname:port)
+    Default: ''
+    Description: >-
+      Required when DatabaseMode=external. RDS endpoint HOSTNAME only (no port),
+      e.g. churn-db.abc123.us-east-1.rds.amazonaws.com
   DatabasePort:
     Type: Number
     Default: 5432
     Description: RDS Database port
+  DatabaseName:
+    Type: String
+    Default: churn_db
+    Description: Database name
+  DatabaseSecretArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Required when DatabaseMode=external. Secrets Manager ARN for database
+      credentials (JSON keys: username, password). When DatabaseMode=create the
+      stack generates this secret itself.
+  # ---- RDS capacity (only used when DatabaseMode=create) ----
+  DbInstanceClass:
+    Type: String
+    Default: db.r6g.large
+    AllowedPattern: '^db\.[a-z0-9]+\.[a-z0-9]+(r\d)?[a-z0-9]*$'
+    ConstraintDescription: Must be a valid RDS DB instance class, e.g. db.r6g.large
+    Description: >-
+      DB instance class when DatabaseMode=create. Staging target db.r6g.large
+      (2 vCPU / 16 GiB, Graviton2) supports PostgreSQL 15 in us-east-1; verify
+      class availability in the target region and the account RDS vCPU quota
+      before deploying elsewhere.
+  DbEngineVersion:
+    Type: String
+    Default: '15'
+    AllowedPattern: '^[0-9]+(\.[0-9]+)*$'
+    ConstraintDescription: Must be a PostgreSQL version number, e.g. 15
+    Description: >-
+      PostgreSQL engine version when DatabaseMode=create. Defaults to 15 to
+      match docker-compose.yml and CI (postgres:15-alpine).
+  DbMultiAZ:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      true = Multi-AZ deployment (synchronous standby in a second AZ, automatic
+      failover, roughly 2x instance + 2x storage cost). false = single-AZ
+      deployment (cheaper, NO automatic failover - this is NOT a highly
+      available database).
+  DbAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 16384
+    Description: Allocated storage in GiB (gp3) when DatabaseMode=create
+  DbBackupRetentionDays:
+    Type: Number
+    Default: 7
+    MinValue: 0
+    MaxValue: 35
+    Description: >-
+      Automated backup retention in days when DatabaseMode=create (0 disables
+      automated backups - staging only).
+  ApiKeySecretArn:
+    Type: String
+    Description: Secrets Manager ARN for API key
+  ModelArtifactsS3Key:
+    Type: String
+    Default: model_v1.joblib
+    Description: S3 key for model artifact in the model artifacts bucket
   Environment:
     Type: String
     Default: production
@@ -29,6 +109,57 @@ Parameters:
   SSLCertificateArn:
     Type: String
     Description: ACM Certificate ARN for HTTPS (required for production)
+  DesiredApiCount:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 10
+    Description: Desired number of API tasks
+  DesiredDashboardCount:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 5
+    Description: Desired number of Dashboard tasks
+  EnableAutoScaling:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Enable auto-scaling for API service
+  RunMigrations:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Set to 'true' to run database migrations as a one-time task during deployment
+
+Conditions:
+  AutoScalingEnabled: !Equals [!Ref EnableAutoScaling, 'true']
+  # Condition to only create ALB access logs bucket in production
+  EnableAlbAccessLogs: !Equals [!Ref Environment, 'production']
+  RunMigrations: !Equals [!Ref RunMigrations, 'true']
+  # Database topology
+  UseExternalDatabase: !Equals [!Ref DatabaseMode, 'external']
+  CreateDatabase: !Equals [!Ref DatabaseMode, 'create']
+  DatabaseMultiAzEnabled: !Equals [!Ref DbMultiAZ, 'true']
+  IsProduction: !Equals [!Ref Environment, 'production']
+
+# Fail fast at change-set/validation time instead of at resource creation.
+Rules:
+  ExternalDatabaseRequiresEndpoint:
+    RuleCondition: !Equals [!Ref DatabaseMode, 'external']
+    Assertions:
+      - Assert: !Not [!Equals [!Ref DatabaseEndpoint, '']]
+        AssertDescription: DatabaseEndpoint (hostname) must be set when DatabaseMode=external
+      - Assert: !Not [!Equals [!Ref DatabaseSecretArn, '']]
+        AssertDescription: DatabaseSecretArn must be set when DatabaseMode=external
+  ApiKeySecretRequired:
+    Assertions:
+      - Assert: !Not [!Equals [!Ref ApiKeySecretArn, '']]
+        AssertDescription: ApiKeySecretArn is required
+  CertificateRequired:
+    Assertions:
+      - Assert: !Not [!Equals [!Ref SSLCertificateArn, '']]
+        AssertDescription: SSLCertificateArn is required for the HTTPS listener
 
 Resources:
   # ============================================================
@@ -41,6 +172,13 @@ Resources:
       ClusterSettings:
         - Name: containerInsights
           Value: enabled
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+          Base: 1
 
   # ============================================================
   # Security Groups
@@ -63,6 +201,17 @@ Resources:
           ToPort: 80
           CidrIp: 0.0.0.0/0
           Description: HTTP from internet (redirects to HTTPS)
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          DestinationSecurityGroupId: !Ref ECSTaskSecurityGroup
+          Description: Allow ALB to forward traffic to API tasks
+        - IpProtocol: tcp
+          FromPort: 8501
+          ToPort: 8501
+          DestinationSecurityGroupId: !Ref ECSTaskSecurityGroup
+          Description: Allow ALB to forward traffic to Dashboard tasks
       Tags:
         - Key: Name
           Value: !Sub churn-alb-sg-${Environment}
@@ -78,8 +227,8 @@ Resources:
         - Key: Name
           Value: !Sub churn-ecs-task-sg-${Environment}
 
-  # ALB to ECS Task Ingress (separate resource to avoid circular dependency)
-  ALBToECSTaskIngress:
+  # ALB to ECS Task Ingress (API on 8000, Dashboard on 8501)
+  ALBToECSTaskIngressApi:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
       GroupId: !Ref ECSTaskSecurityGroup
@@ -87,20 +236,19 @@ Resources:
       FromPort: 8000
       ToPort: 8000
       SourceSecurityGroupId: !Ref ALBSecurityGroup
-      Description: Allow traffic from ALB to ECS tasks
+      Description: Allow traffic from ALB to API tasks
 
-  # ALB to ECS Task Egress (separate resource to avoid circular dependency)
-  ALBToECSTaskEgress:
-    Type: AWS::EC2::SecurityGroupEgress
+  ALBToECSTaskIngressDashboard:
+    Type: AWS::EC2::SecurityGroupIngress
     Properties:
-      GroupId: !Ref ALBSecurityGroup
+      GroupId: !Ref ECSTaskSecurityGroup
       IpProtocol: tcp
-      FromPort: 8000
-      ToPort: 8000
-      DestinationSecurityGroupId: !Ref ECSTaskSecurityGroup
-      Description: Allow ALB to forward traffic to ECS tasks
+      FromPort: 8501
+      ToPort: 8501
+      SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Description: Allow traffic from ALB to Dashboard tasks
 
-  # ECS Task Egress to Internet (HTTPS)
+  # ECS Task Egress to Internet (HTTPS) for ECR, S3, CloudWatch, external APIs
   ECSTaskEgressHTTPS:
     Type: AWS::EC2::SecurityGroupEgress
     Properties:
@@ -110,6 +258,17 @@ Resources:
       ToPort: 443
       CidrIp: 0.0.0.0/0
       Description: HTTPS outbound for ECR, S3, CloudWatch, external APIs
+
+  # ECS Task Egress to Database (PostgreSQL)
+  ECSTaskToDatabaseEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ECSTaskSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref DatabasePort
+      ToPort: !Ref DatabasePort
+      DestinationSecurityGroupId: !Ref DatabaseSecurityGroup
+      Description: PostgreSQL to RDS
 
   # RDS Database Security Group - only allows traffic from ECS tasks
   DatabaseSecurityGroup:
@@ -128,39 +287,12 @@ Resources:
         - Key: Name
           Value: !Sub churn-rds-sg-${Environment}
 
-  # ECS Task to Database Ingress
-  ECSTaskToDatabaseIngress:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      GroupId: !Ref DatabaseSecurityGroup
-      IpProtocol: tcp
-      FromPort: !Ref DatabasePort
-      ToPort: !Ref DatabasePort
-      SourceSecurityGroupId: !Ref ECSTaskSecurityGroup
-      Description: Allow PostgreSQL from ECS tasks only
-
-  # ECS Task to Database Egress
-  ECSTaskToDatabaseEgress:
-    Type: AWS::EC2::SecurityGroupEgress
-    Properties:
-      GroupId: !Ref ECSTaskSecurityGroup
-      IpProtocol: tcp
-      FromPort: !Ref DatabasePort
-      ToPort: !Ref DatabasePort
-      DestinationSecurityGroupId: !Ref DatabaseSecurityGroup
-      Description: PostgreSQL to RDS
-
   # ============================================================
   # VPC Endpoints (Interface endpoints for private connectivity)
   # ============================================================
   # ECR API endpoint for pulling images
   ECRVpcEndpoint:
     Type: AWS::EC2::VPCEndpoint
-    Metadata:
-      cfn-lint:
-        config:
-          ignore_checks:
-            - E1010
     Properties:
       VpcId: !Ref VpcId
       ServiceName: !Sub com.amazonaws.${AWS::Region}.ecr.api
@@ -173,11 +305,6 @@ Resources:
   # ECR DKR endpoint for pulling image layers
   ECRDkrVpcEndpoint:
     Type: AWS::EC2::VPCEndpoint
-    Metadata:
-      cfn-lint:
-        config:
-          ignore_checks:
-            - E1010
     Properties:
       VpcId: !Ref VpcId
       ServiceName: !Sub com.amazonaws.${AWS::Region}.ecr.dkr
@@ -187,29 +314,20 @@ Resources:
         - !Ref ECSTaskSecurityGroup
       PrivateDnsEnabled: true
 
-  # S3 Gateway endpoint for model artifacts
+  # S3 Gateway endpoint for model artifacts and ECR layer pulls (per route table)
   S3VpcEndpoint:
     Type: AWS::EC2::VPCEndpoint
-    Metadata:
-      cfn-lint:
-        config:
-          ignore_checks:
-            - E1010
     Properties:
       VpcId: !Ref VpcId
       ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
       VpcEndpointType: Gateway
       RouteTableIds:
-        - !Ref PrivateRouteTable
+        - !Ref PrivateRouteTableA
+        - !Ref PrivateRouteTableB
 
   # CloudWatch Logs endpoint
   CloudWatchLogsVpcEndpoint:
     Type: AWS::EC2::VPCEndpoint
-    Metadata:
-      cfn-lint:
-        config:
-          ignore_checks:
-            - E1010
     Properties:
       VpcId: !Ref VpcId
       ServiceName: !Sub com.amazonaws.${AWS::Region}.logs
@@ -222,11 +340,6 @@ Resources:
   # CloudWatch Monitoring endpoint
   CloudWatchMonitoringVpcEndpoint:
     Type: AWS::EC2::VPCEndpoint
-    Metadata:
-      cfn-lint:
-        config:
-          ignore_checks:
-            - E1010
     Properties:
       VpcId: !Ref VpcId
       ServiceName: !Sub com.amazonaws.${AWS::Region}.monitoring
@@ -239,11 +352,6 @@ Resources:
   # Secrets Manager endpoint for database credentials
   SecretsManagerVpcEndpoint:
     Type: AWS::EC2::VPCEndpoint
-    Metadata:
-      cfn-lint:
-        config:
-          ignore_checks:
-            - E1010
     Properties:
       VpcId: !Ref VpcId
       ServiceName: !Sub com.amazonaws.${AWS::Region}.secretsmanager
@@ -254,52 +362,209 @@ Resources:
       PrivateDnsEnabled: true
 
   # ============================================================
-  # NAT Gateway and Routing (for private subnet outbound access)
+  # NAT Gateways and Routing (one NAT per AZ for zonal egress resilience)
+  # Topology:
+  #   public subnet[0] (AZ-a) -> NatGatewayA -> PrivateRouteTableA -> private subnet[0]
+  #   public subnet[1] (AZ-b) -> NatGatewayB -> PrivateRouteTableB -> private subnet[1]
+  # Prerequisites (cannot be validated statically): PublicSubnetIds[0] and
+  # PrivateSubnetIds[0] must be in the same AZ, PublicSubnetIds[1] and
+  # PrivateSubnetIds[1] in a second AZ, and both public subnets must have a
+  # route to an Internet Gateway, otherwise NAT creation/egress fails.
   # ============================================================
-  NatGatewayEIP:
+  NatGatewayEIPA:
     Type: AWS::EC2::EIP
     Properties:
       Domain: vpc
       Tags:
         - Key: Name
-          Value: !Sub churn-nat-eip-${Environment}
+          Value: !Sub churn-nat-eip-a-${Environment}
 
-  NatGateway:
+  NatGatewayEIPB:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub churn-nat-eip-b-${Environment}
+
+  NatGatewayA:
     Type: AWS::EC2::NatGateway
     Properties:
-      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      AllocationId: !GetAtt NatGatewayEIPA.AllocationId
       SubnetId: !Select [0, !Ref PublicSubnetIds]
       Tags:
         - Key: Name
-          Value: !Sub churn-nat-gw-${Environment}
+          Value: !Sub churn-nat-gw-a-${Environment}
 
-  # Route table for private subnets (via NAT Gateway)
-  PrivateRouteTable:
+  NatGatewayB:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIPB.AllocationId
+      SubnetId: !Select [1, !Ref PublicSubnetIds]
+      Tags:
+        - Key: Name
+          Value: !Sub churn-nat-gw-b-${Environment}
+
+  # Route table per AZ-private subnet (each egresses via its own NAT)
+  PrivateRouteTableA:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref VpcId
       Tags:
         - Key: Name
-          Value: !Sub churn-private-rt-${Environment}
+          Value: !Sub churn-private-rt-a-${Environment}
+
+  PrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VpcId
+      Tags:
+        - Key: Name
+          Value: !Sub churn-private-rt-b-${Environment}
 
   PrivateRouteTableAssociation1:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Select [0, !Ref PrivateSubnetIds]
-      RouteTableId: !Ref PrivateRouteTable
+      RouteTableId: !Ref PrivateRouteTableA
 
   PrivateRouteTableAssociation2:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Select [1, !Ref PrivateSubnetIds]
-      RouteTableId: !Ref PrivateRouteTable
+      RouteTableId: !Ref PrivateRouteTableB
 
-  PrivateRouteToNatGateway:
+  PrivateRouteToNatGatewayA:
     Type: AWS::EC2::Route
     Properties:
-      RouteTableId: !Ref PrivateRouteTable
+      RouteTableId: !Ref PrivateRouteTableA
       DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId: !Ref NatGateway
+      NatGatewayId: !Ref NatGatewayA
+
+  PrivateRouteToNatGatewayB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayB
+
+  # ============================================================
+  # RDS for PostgreSQL (created only when DatabaseMode=create)
+  # Note: two NAT Gateways do NOT make the database highly available.
+  # Database availability is decided by DbMultiAZ alone.
+  # ============================================================
+  DatabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: CreateDatabase
+    Properties:
+      Description: !Sub Master credentials for the churn platform RDS instance - ${Environment}
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "churnadmin"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludePunctuation: true
+      Tags:
+        - Key: Name
+          Value: !Sub churn-db-credentials-${Environment}
+
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Condition: CreateDatabase
+    Properties:
+      DBSubnetGroupDescription: >-
+        Private subnets for the churn RDS instance. Requires private subnets in
+        at least two Availability Zones (Multi-AZ requires exactly that).
+      SubnetIds: !Ref PrivateSubnetIds
+      Tags:
+        - Key: Name
+          Value: !Sub churn-db-subnet-group-${Environment}
+
+  DatabaseInstance:
+    Type: AWS::RDS::DBInstance
+    Condition: CreateDatabase
+    # Never destroy data implicitly; require a final snapshot on delete/replace.
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub churn-db-${Environment}
+      DBInstanceClass: !Ref DbInstanceClass
+      Engine: postgres
+      EngineVersion: !Ref DbEngineVersion
+      DBName: !Ref DatabaseName
+      MasterUsername: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}'
+      AllocatedStorage: !Ref DbAllocatedStorage
+      StorageType: gp3
+      StorageEncrypted: true
+      MultiAZ: !If [DatabaseMultiAzEnabled, true, false]
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DatabaseSecurityGroup
+      PubliclyAccessible: false
+      Port: !Ref DatabasePort
+      BackupRetentionPeriod: !Ref DbBackupRetentionDays
+      AutoMinorVersionUpgrade: true
+      CopyTagsToSnapshot: true
+      Tags:
+        - Key: Name
+          Value: !Sub churn-db-${Environment}
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Links host/port/dbname into the credentials secret (required before RDS
+  # secret rotation is enabled; harmless otherwise).
+  DatabaseSecretAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Condition: CreateDatabase
+    Properties:
+      SecretId: !Ref DatabaseSecret
+      TargetId: !Ref DatabaseInstance
+      TargetType: AWS::RDS::DBInstance
+
+  # ============================================================
+  # S3 Bucket for Model Artifacts (provisioned by this stack)
+  # ============================================================
+  ModelArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub churn-model-artifacts-${AWS::AccountId}-${Environment}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 90
+
+  # S3 Bucket for ALB Access Logs (only in production)
+  AlbAccessLogsBucket:
+    Type: AWS::S3::Bucket
+    Condition: EnableAlbAccessLogs
+    Properties:
+      BucketName: !Sub churn-alb-logs-${AWS::AccountId}-${Environment}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldLogs
+            Status: Enabled
+            ExpirationInDays: 365
 
   # ============================================================
   # Application Load Balancer
@@ -310,15 +575,29 @@ Resources:
       Name: !Sub churn-alb-${Environment}
       Scheme: internet-facing
       LoadBalancerAttributes:
+        # Deletion protection only in production so staging stacks can be torn
+        # down. (S3 buckets with objects still block stack deletion - empty
+        # them first; see docs/AWS_DEPLOYMENT.md.)
         - Key: deletion_protection.enabled
-          Value: 'true'
+          Value: !If [IsProduction, 'true', 'false']
         - Key: access_logs.s3.enabled
-          Value: 'false' # Enable in production with proper S3 bucket
+          Value: !If [EnableAlbAccessLogs, 'true', 'false']
+        - Key: access_logs.s3.bucket
+          Value: !If [EnableAlbAccessLogs, !Ref AlbAccessLogsBucket, !Ref 'AWS::NoValue']
+        - Key: access_logs.s3.prefix
+          Value: !If [EnableAlbAccessLogs, 'churn-alb-logs', !Ref 'AWS::NoValue']
+        - Key: routing.http2.enabled
+          Value: 'true'
+        - Key: routing.http.desync_mitigation_mode
+          Value: strictest
+        - Key: waf.fail_open.enabled
+          Value: 'false'
       Subnets: !Ref PublicSubnetIds
       SecurityGroups:
         - !Ref ALBSecurityGroup
       IpAddressType: ipv4
 
+  # HTTPS Listener (port 443)
   ALBListenerHTTPS:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
@@ -331,6 +610,7 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref APITargetGroup
 
+  # HTTP Listener (port 80) - redirects to HTTPS
   ALBListenerHTTP:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
@@ -344,7 +624,7 @@ Resources:
             Port: 443
             StatusCode: HTTP_301
 
-  # Target Group for API service
+  # Target Group for API service (port 8000)
   APITargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
@@ -364,12 +644,77 @@ Resources:
       TargetGroupAttributes:
         - Key: deregistration_delay.timeout_seconds
           Value: '30'
+        - Key: slow_start.duration_seconds
+          Value: '30'
+      Tags:
+        - Key: Name
+          Value: !Sub churn-api-tg-${Environment}
+
+  # Target Group for Dashboard service (port 8501)
+  DashboardTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub churn-dashboard-tg-${Environment}
+      Port: 8501
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+      TargetType: ip
+      HealthCheckPath: /_stcore/health
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+      Tags:
+        - Key: Name
+          Value: !Sub churn-dashboard-tg-${Environment}
+
+  # HTTPS Listener Rules for path-based routing
+  # API paths
+  ALBListenerRuleApi:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ALBListenerHTTPS
+      Priority: 100
+      Conditions:
+        - Field: path-pattern
+          Values: ['/api/*', '/predict*', '/model/*', '/explain*', '/retention*', '/health', '/ready', '/docs*', '/openapi*']
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref APITargetGroup
+
+  # Dashboard paths
+  ALBListenerRuleDashboard:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ALBListenerHTTPS
+      Priority: 200
+      Conditions:
+        - Field: path-pattern
+          Values: ['/dashboard*', '/_stcore/*', '/']
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref DashboardTargetGroup
 
   # ============================================================
   # IAM Roles
   # ============================================================
+  # Task Execution Role - for pulling images, writing logs, reading secrets
   TaskExecutionRole:
     Type: AWS::IAM::Role
+    # DatabaseSecretArn defaults to '' so DatabaseMode=create can omit it; the
+    # Rules section guarantees a real ARN whenever DatabaseMode=external, which
+    # is why the empty-default value can be ignored here by cfn-lint (W1030).
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W1030
     Properties:
       RoleName: !Sub churn-task-execution-role-${Environment}
       AssumeRolePolicyDocument:
@@ -391,7 +736,10 @@ Resources:
                   - secretsmanager:GetSecretValue
                   - secretsmanager:DescribeSecret
                 Resource:
-                  - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:ChurnDBCredentials*
+                  # Stack-generated credential secret when DatabaseMode=create,
+                  # externally supplied ARN when DatabaseMode=external.
+                  - !If [UseExternalDatabase, !Ref DatabaseSecretArn, !Ref DatabaseSecret]
+                  - !Ref ApiKeySecretArn
               - Effect: Allow
                 Action:
                   - s3:GetObject
@@ -405,7 +753,12 @@ Resources:
                   - logs:DescribeLogGroups
                   - logs:DescribeLogStreams
                 Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
 
+  # Task Role - runtime permissions for the application
   TaskRole:
     Type: AWS::IAM::Role
     Properties:
@@ -432,146 +785,38 @@ Resources:
                   - rds-db:connect
                 Resource:
                   - !Sub arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:*/*
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: 'ChurnPlatform'
 
   # ============================================================
-  # S3 Bucket for Model Artifacts
-  # ============================================================
-  ModelArtifactsBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub churn-model-artifacts-${AWS::AccountId}-${Environment}
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
-      VersioningConfiguration:
-        Status: Enabled
-      LifecycleConfiguration:
-        Rules:
-          - Id: DeleteOldVersions
-            Status: Enabled
-            NoncurrentVersionExpirationInDays: 90
-
-  # ============================================================
-  # Task Definition
-  # ============================================================
-  ApiTaskDefinition:
-    Type: AWS::ECS::TaskDefinition
-    Properties:
-      Family: !Sub churn-api-task-${Environment}
-      Cpu: '512'
-      Memory: '1024'
-      NetworkMode: awsvpc
-      RequiresCompatibilities:
-        - FARGATE
-      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
-      TaskRoleArn: !GetAtt TaskRole.Arn
-      ContainerDefinitions:
-        - Name: churn-api
-          Image: !Ref ImageUrl
-          PortMappings:
-            - ContainerPort: 8000
-              Protocol: tcp
-          Environment:
-            - Name: DATABASE_URL
-              Value: !Sub postgresql+psycopg2://{{resolve:secretsmanager:ChurnDBCredentials:SecretString:username}}:{{resolve:secretsmanager:ChurnDBCredentials:SecretString:password}}@${DatabaseEndpoint}:${DatabasePort}/churn_db
-            - Name: MODEL_ARTIFACTS_BUCKET
-              Value: !Sub churn-model-artifacts-${AWS::AccountId}-${Environment}
-            - Name: MODEL_ARTIFACTS_KEY
-              Value: model_v1.joblib
-            - Name: API_KEY
-              Value: "{{resolve:secretsmanager:ChurnAPIKey:SecretString:key}}"
-            - Name: ENVIRONMENT
-              Value: !Ref Environment
-            - Name: RATE_LIMIT_ENABLED
-              Value: "true"
-            - Name: DATA_MINIMIZATION_ENABLED
-              Value: "true"
-            - Name: DATA_RETENTION_DAYS
-              Value: "90"
-            - Name: LOG_LEVEL
-              Value: "INFO"
-          LogConfiguration:
-            LogDriver: awslogs
-            Options:
-              awslogs-group: !Sub /ecs/churn-api-${Environment}
-              awslogs-region: !Ref AWS::Region
-              awslogs-stream-prefix: ecs
-          HealthCheck:
-            Command: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
-            Interval: 30
-            Timeout: 10
-            Retries: 3
-            StartPeriod: 60
-
-  # ============================================================
-  # ECS Service
-  # ============================================================
-  ApiService:
-    Type: AWS::ECS::Service
-    Properties:
-      Cluster: !Ref ChurnECSCluster
-      ServiceName: !Sub churn-api-service-${Environment}
-      TaskDefinition: !Ref ApiTaskDefinition
-      DesiredCount: 2
-      LaunchType: FARGATE
-      DeploymentConfiguration:
-        MinimumHealthyPercent: 100
-        MaximumPercent: 200
-        DeploymentCircuitBreaker:
-          Enable: true
-          Rollback: true
-      NetworkConfiguration:
-        AwsvpcConfiguration:
-          AssignPublicIp: DISABLED
-          Subnets: !Ref PrivateSubnetIds
-          SecurityGroups:
-            - !Ref ECSTaskSecurityGroup
-      LoadBalancers:
-        - ContainerName: churn-api
-          ContainerPort: 8000
-          TargetGroupArn: !Ref APITargetGroup
-      ServiceRegistries:
-        - RegistryArn: !GetAtt CloudMapService.Arn
-          Port: 8000
-          ContainerName: churn-api
-          ContainerPort: 8000
-
-  # ============================================================
-  # Service Discovery (Cloud Map)
-  # ============================================================
-  CloudMapNamespace:
-    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
-    Properties:
-      Name: !Sub churn.local.${Environment}
-      Vpc: !Ref VpcId
-      Description: Service discovery namespace for Churn Platform
-
-  CloudMapService:
-    Type: AWS::ServiceDiscovery::Service
-    Properties:
-      Name: churn-api
-      NamespaceId: !Ref CloudMapNamespace
-      DnsConfig:
-        DnsRecords:
-          - Type: A
-            TTL: 60
-        RoutingPolicy: MULTIVALUE
-      HealthCheckCustomConfig:
-        FailureThreshold: 1
-
-  # ============================================================
-  # CloudWatch Log Group
+  # CloudWatch Log Groups
   # ============================================================
   ApiLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub /ecs/churn-api-${Environment}
+      RetentionInDays: 30
+      KmsKeyId: !Ref LogsEncryptionKey
+
+  DashboardLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/churn-dashboard-${Environment}
+      RetentionInDays: 30
+      KmsKeyId: !Ref LogsEncryptionKey
+
+  # The migration task references this group; without it CloudFormation's
+  # implicit log-group creation would leave retention at "never expire".
+  MigrationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: RunMigrations
+    Properties:
+      LogGroupName: !Sub /ecs/churn-migration-${Environment}
       RetentionInDays: 30
       KmsKeyId: !Ref LogsEncryptionKey
 
@@ -602,15 +847,398 @@ Resources:
             Resource: '*'
 
   # ============================================================
+  # Service Discovery (Cloud Map)
+  # ============================================================
+  CloudMapNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: !Sub churn.local.${Environment}
+      Vpc: !Ref VpcId
+      Description: Service discovery namespace for Churn Platform
+
+  CloudMapServiceApi:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: churn-api
+      NamespaceId: !Ref CloudMapNamespace
+      DnsConfig:
+        DnsRecords:
+          - Type: A
+            TTL: 60
+        RoutingPolicy: MULTIVALUE
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+
+  CloudMapServiceDashboard:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: churn-dashboard
+      NamespaceId: !Ref CloudMapNamespace
+      DnsConfig:
+        DnsRecords:
+          - Type: A
+            TTL: 60
+        RoutingPolicy: MULTIVALUE
+      HealthCheckCustomConfig:
+        FailureThreshold: 1
+
+  # ============================================================
+  # API Task Definition
+  # ============================================================
+  ApiTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub churn-api-task-${Environment}
+      Cpu: '512'
+      Memory: '1024'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: churn-api
+          Image: !Ref ApiImageUrl
+          # Runs the API directly; migrations are executed only by the separate
+          # MigrationService, never by an application replica (this bypasses
+          # /docker-entrypoint.sh, which would run `alembic upgrade head`).
+          # EntryPoint + Command are both explicit: the image CMD embeds
+          # shell-style ${VAR:-default} defaults in a JSON (exec-form) array,
+          # which the container runtime never expands, and leaving Command unset
+          # would append that image CMD to this overridden entrypoint.
+          # --workers 2 feeds the RDS connection budget (see docs/AWS_DEPLOYMENT.md).
+          EntryPoint: ["uvicorn", "src.api:app"]
+          Command:
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+            - "--workers"
+            - "2"
+            - "--keep-alive-timeout"
+            - "75"
+            - "--timeout-keep-alive"
+            - "75"
+            - "--limit-concurrency"
+            - "1000"
+            - "--backlog"
+            - "2048"
+            - "--log-level"
+            - "info"
+            - "--access-log"
+            - "--proxy-headers"
+            - "--forwarded-allow-ips=*"
+          PortMappings:
+            - ContainerPort: 8000
+              Protocol: tcp
+          Environment:
+            - Name: DATABASE_URL
+              Value: !If
+                - UseExternalDatabase
+                - !Sub postgresql+psycopg2://{{resolve:secretsmanager:${DatabaseSecretArn}:SecretString:username}}:{{resolve:secretsmanager:${DatabaseSecretArn}:SecretString:password}}@${DatabaseEndpoint}:${DatabasePort}/${DatabaseName}
+                - !Sub postgresql+psycopg2://{{resolve:secretsmanager:${DatabaseSecret}:SecretString:username}}:{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}@${DatabaseInstance.Endpoint.Address}:${DatabasePort}/${DatabaseName}
+            - Name: MODEL_ARTIFACTS_BUCKET
+              Value: !Sub churn-model-artifacts-${AWS::AccountId}-${Environment}
+            - Name: MODEL_ARTIFACTS_KEY
+              Value: !Ref ModelArtifactsS3Key
+            - Name: API_KEY
+              Value: !Sub "{{resolve:secretsmanager:${ApiKeySecretArn}:SecretString:key}}"
+            - Name: ENVIRONMENT
+              Value: !Ref Environment
+            - Name: RATE_LIMIT_ENABLED
+              Value: "true"
+            - Name: DATA_MINIMIZATION_ENABLED
+              Value: "true"
+            - Name: DATA_RETENTION_DAYS
+              Value: "90"
+            - Name: LOG_LEVEL
+              Value: "INFO"
+            - Name: PYTHONUNBUFFERED
+              Value: "1"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub /ecs/churn-api-${Environment}
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          HealthCheck:
+            Command: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+            Interval: 30
+            Timeout: 10
+            Retries: 3
+            StartPeriod: 60
+          Essential: true
+
+  # ============================================================
+  # Dashboard Task Definition
+  # ============================================================
+  DashboardTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub churn-dashboard-task-${Environment}
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: churn-dashboard
+          Image: !Ref DashboardImageUrl
+          PortMappings:
+            - ContainerPort: 8501
+              Protocol: tcp
+          Environment:
+            - Name: API_URL
+              Value: !Sub https://${ALB.DNSName}/api
+            - Name: ENVIRONMENT
+              Value: !Ref Environment
+            - Name: LOG_LEVEL
+              Value: "INFO"
+            - Name: PYTHONUNBUFFERED
+              Value: "1"
+            - Name: STREAMLIT_SERVER_HEADLESS
+              Value: "true"
+            - Name: STREAMLIT_SERVER_ENABLE_CORS
+              Value: "false"
+            - Name: STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION
+              Value: "true"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub /ecs/churn-dashboard-${Environment}
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          HealthCheck:
+            Command: ["CMD-SHELL", "curl -f http://localhost:8501/_stcore/health || exit 1"]
+            Interval: 30
+            Timeout: 10
+            Retries: 3
+            StartPeriod: 60
+          Essential: true
+
+  # ============================================================
+  # Migration Task Definition (one-time migration task)
+  # ============================================================
+  MigrationTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Condition: RunMigrations
+    Properties:
+      Family: !Sub churn-migration-task-${Environment}
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: churn-migration
+          Image: !Ref ApiImageUrl
+          # Call alembic directly so /docker-entrypoint.sh does not run
+          # `alembic upgrade head` a second time before the command.
+          EntryPoint: ["alembic"]
+          Command: ["upgrade", "head"]
+          Environment:
+            - Name: DATABASE_URL
+              Value: !If
+                - UseExternalDatabase
+                - !Sub postgresql+psycopg2://{{resolve:secretsmanager:${DatabaseSecretArn}:SecretString:username}}:{{resolve:secretsmanager:${DatabaseSecretArn}:SecretString:password}}@${DatabaseEndpoint}:${DatabasePort}/${DatabaseName}
+                - !Sub postgresql+psycopg2://{{resolve:secretsmanager:${DatabaseSecret}:SecretString:username}}:{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}@${DatabaseInstance.Endpoint.Address}:${DatabasePort}/${DatabaseName}
+            - Name: MODEL_ARTIFACTS_BUCKET
+              Value: !Sub churn-model-artifacts-${AWS::AccountId}-${Environment}
+            - Name: MODEL_ARTIFACTS_KEY
+              Value: !Ref ModelArtifactsS3Key
+            - Name: API_KEY
+              Value: !Sub "{{resolve:secretsmanager:${ApiKeySecretArn}:SecretString:key}}"
+            - Name: ENVIRONMENT
+              Value: !Ref Environment
+            - Name: PYTHONUNBUFFERED
+              Value: "1"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub /ecs/churn-migration-${Environment}
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+          Essential: true
+
+  # ============================================================
+  # Migration Service (one-time task for database migrations)
+  # ============================================================
+  MigrationService:
+    Type: AWS::ECS::Service
+    Condition: RunMigrations
+    DependsOn:
+      - ALBListenerRuleApi
+    Properties:
+      Cluster: !Ref ChurnECSCluster
+      ServiceName: !Sub churn-migration-service-${Environment}
+      TaskDefinition: !Ref MigrationTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      DeploymentConfiguration:
+        MaximumPercent: 100
+        MinimumHealthyPercent: 0
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups:
+            - !Ref ECSTaskSecurityGroup
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+
+  # ============================================================
+  # ECS Services
+  # ============================================================
+  # API Service
+  ApiService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - ALBListenerRuleApi
+    Properties:
+      Cluster: !Ref ChurnECSCluster
+      ServiceName: !Sub churn-api-service-${Environment}
+      TaskDefinition: !Ref ApiTaskDefinition
+      DesiredCount: !Ref DesiredApiCount
+      LaunchType: FARGATE
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups:
+            - !Ref ECSTaskSecurityGroup
+      LoadBalancers:
+        - ContainerName: churn-api
+          ContainerPort: 8000
+          TargetGroupArn: !Ref APITargetGroup
+      ServiceRegistries:
+        - RegistryArn: !GetAtt CloudMapServiceApi.Arn
+          Port: 8000
+          ContainerName: churn-api
+          ContainerPort: 8000
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+
+  # Dashboard Service
+  DashboardService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - ALBListenerRuleDashboard
+    Properties:
+      Cluster: !Ref ChurnECSCluster
+      ServiceName: !Sub churn-dashboard-service-${Environment}
+      TaskDefinition: !Ref DashboardTaskDefinition
+      DesiredCount: !Ref DesiredDashboardCount
+      LaunchType: FARGATE
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups:
+            - !Ref ECSTaskSecurityGroup
+      LoadBalancers:
+        - ContainerName: churn-dashboard
+          ContainerPort: 8501
+          TargetGroupArn: !Ref DashboardTargetGroup
+      ServiceRegistries:
+        - RegistryArn: !GetAtt CloudMapServiceDashboard.Arn
+          Port: 8501
+          ContainerName: churn-dashboard
+          ContainerPort: 8501
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+
+  # ============================================================
+  # Auto Scaling for API Service
+  # ============================================================
+  ApiScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Condition: AutoScalingEnabled
+    Properties:
+      MaxCapacity: 10
+      MinCapacity: 2
+      ResourceId: !Sub service/${ChurnECSCluster}/${ApiService.Name}
+      RoleARN: !GetAtt AutoScalingRole.Arn
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  ApiScalingPolicyCPU:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Condition: AutoScalingEnabled
+    Properties:
+      PolicyName: !Sub churn-api-cpu-scaling-${Environment}
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ApiScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 70.0
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        ScaleOutCooldown: 300
+        ScaleInCooldown: 300
+        DisableScaleIn: false
+
+  ApiScalingPolicyMemory:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Condition: AutoScalingEnabled
+    Properties:
+      PolicyName: !Sub churn-api-memory-scaling-${Environment}
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ApiScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 75.0
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageMemoryUtilization
+        ScaleOutCooldown: 300
+        ScaleInCooldown: 300
+        DisableScaleIn: false
+
+  # Auto Scaling Role
+  AutoScalingRole:
+    Type: AWS::IAM::Role
+    Condition: AutoScalingEnabled
+    Properties:
+      RoleName: !Sub churn-autoscaling-role-${Environment}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: application-autoscaling.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AutoScalingPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:DescribeServices
+                  - ecs:UpdateService
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:DeleteAlarms
+                Resource: '*'
+
+  # ============================================================
   # CloudWatch Alarms
   # ============================================================
   HighCPUUtilizationAlarm:
     Type: AWS::CloudWatch::Alarm
-    Metadata:
-      cfn-lint:
-        config:
-          ignore_checks:
-            - E1010
     Properties:
       AlarmName: !Sub churn-api-high-cpu-${Environment}
       AlarmDescription: CPU utilization exceeded 80% for 5 minutes
@@ -620,7 +1248,7 @@ Resources:
         - Name: ClusterName
           Value: !Ref ChurnECSCluster
         - Name: ServiceName
-          Value: !GetAtt ApiService.ServiceName
+          Value: !GetAtt ApiService.Name
       Statistic: Average
       Period: 300
       EvaluationPeriods: 1
@@ -630,11 +1258,6 @@ Resources:
 
   HighMemoryUtilizationAlarm:
     Type: AWS::CloudWatch::Alarm
-    Metadata:
-      cfn-lint:
-        config:
-          ignore_checks:
-            - E1010
     Properties:
       AlarmName: !Sub churn-api-high-memory-${Environment}
       AlarmDescription: Memory utilization exceeded 80% for 5 minutes
@@ -644,7 +1267,26 @@ Resources:
         - Name: ClusterName
           Value: !Ref ChurnECSCluster
         - Name: ServiceName
-          Value: !GetAtt ApiService.ServiceName
+          Value: !GetAtt ApiService.Name
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  DashboardHighCPUUtilizationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub churn-dashboard-high-cpu-${Environment}
+      AlarmDescription: Dashboard CPU utilization exceeded 80% for 5 minutes
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref ChurnECSCluster
+        - Name: ServiceName
+          Value: !GetAtt DashboardService.Name
       Statistic: Average
       Period: 300
       EvaluationPeriods: 1
@@ -671,11 +1313,6 @@ Resources:
 
   TaskStoppedAlarm:
     Type: AWS::CloudWatch::Alarm
-    Metadata:
-      cfn-lint:
-        config:
-          ignore_checks:
-            - E1010
     Properties:
       AlarmName: !Sub churn-api-tasks-stopped-${Environment}
       AlarmDescription: ECS tasks stopped unexpectedly
@@ -685,7 +1322,7 @@ Resources:
         - Name: ClusterName
           Value: !Ref ChurnECSCluster
         - Name: ServiceName
-          Value: !GetAtt ApiService.ServiceName
+          Value: !GetAtt ApiService.Name
       Statistic: Minimum
       Period: 60
       EvaluationPeriods: 3
@@ -693,8 +1330,26 @@ Resources:
       ComparisonOperator: LessThanThreshold
       TreatMissingData: breaching
 
-Conditions: {}
+  ALBTargetResponseTimeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub churn-alb-high-latency-${Environment}
+      AlarmDescription: ALB target response time exceeded 2 seconds
+      Namespace: AWS/ApplicationELB
+      MetricName: TargetResponseTime
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ALB.LoadBalancerFullName
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 2.0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
 
+  # ============================================================
+  # Outputs
+  # ============================================================
 Outputs:
   ClusterName:
     Description: ECS Cluster name
@@ -726,6 +1381,12 @@ Outputs:
     Export:
       Name: !Sub ${AWS::StackName}-APITargetGroupArn
 
+  DashboardTargetGroupArn:
+    Description: Dashboard Target Group ARN
+    Value: !Ref DashboardTargetGroup
+    Export:
+      Name: !Sub ${AWS::StackName}-DashboardTargetGroupArn
+
   ModelArtifactsBucket:
     Description: S3 Bucket for model artifacts
     Value: !Sub churn-model-artifacts-${AWS::AccountId}-${Environment}
@@ -755,3 +1416,50 @@ Outputs:
     Value: !Ref ALBSecurityGroup
     Export:
       Name: !Sub ${AWS::StackName}-ALBSecurityGroupId
+
+  TaskExecutionRoleArn:
+    Description: Task Execution Role ARN
+    Value: !GetAtt TaskExecutionRole.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-TaskExecutionRoleArn
+
+  TaskRoleArn:
+    Description: Task Role ARN
+    Value: !GetAtt TaskRole.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-TaskRoleArn
+
+  NatGatewayAId:
+    Description: NAT Gateway in public subnet [0] (AZ-a egress for private subnet [0])
+    Value: !Ref NatGatewayA
+    Export:
+      Name: !Sub ${AWS::StackName}-NatGatewayAId
+
+  NatGatewayBId:
+    Description: NAT Gateway in public subnet [1] (AZ-b egress for private subnet [1])
+    Value: !Ref NatGatewayB
+    Export:
+      Name: !Sub ${AWS::StackName}-NatGatewayBId
+
+  DatabaseEndpointAddress:
+    Condition: CreateDatabase
+    Description: Endpoint hostname of the RDS instance created by this stack
+    Value: !GetAtt DatabaseInstance.Endpoint.Address
+    Export:
+      Name: !Sub ${AWS::StackName}-DatabaseEndpointAddress
+
+  DatabaseInstanceClass:
+    Condition: CreateDatabase
+    Description: DB instance class of the RDS instance created by this stack
+    Value: !Ref DbInstanceClass
+    Export:
+      Name: !Sub ${AWS::StackName}-DatabaseInstanceClass
+
+  DatabaseMultiAZ:
+    Condition: CreateDatabase
+    Description: >-
+      Whether the created RDS instance is Multi-AZ (true = automatic failover;
+      false = single-AZ, not highly available)
+    Value: !Ref DbMultiAZ
+    Export:
+      Name: !Sub ${AWS::StackName}-DatabaseMultiAZ

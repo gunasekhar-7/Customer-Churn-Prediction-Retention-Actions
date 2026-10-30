@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 import shap
 from sklearn.linear_model import LogisticRegression
@@ -13,9 +15,29 @@ from src.inference import predict_with_threshold
 from src.preprocessing import build_preprocessor, get_binary_target
 
 
-def run():
+def resolve_data_path(data_path: str = None) -> str:
+    """Resolve data path relative to project root if not absolute."""
+    if data_path is None:
+        data_path = "data/Telco-Customer-Churn.csv"
+    path = Path(data_path)
+    if path.is_absolute():
+        return str(path)
+    # Try relative to current working directory
+    if path.exists():
+        return str(path.resolve())
+    # Try relative to project root (parent of scripts directory)
+    project_root = Path(__file__).parent.parent
+    alt_path = (project_root / path).resolve()
+    if alt_path.exists():
+        return str(alt_path)
+    # Return original path (will fail with clear error in pd.read_csv)
+    return str(path.resolve())
+
+
+def run(data_path: str = None):
     print("Loading data...")
-    df = pd.read_csv('/tmp/Telco-Customer-Churn.csv')
+    data_path = resolve_data_path(data_path)
+    df = pd.read_csv(data_path)
     X = df.drop(columns=['customerID', 'Churn'])
     y = get_binary_target(df, 'Churn')
 

@@ -68,6 +68,8 @@ mlruns/
 data/raw/
 data/processed/
 data/interim/
+# Full IBM dataset is not committed; verify/re-acquire per docs/DATA_PROVENANCE.md
+data/*FULL*.csv
 models/*.pkl
 models/*.joblib
 

@@ -4,9 +4,11 @@ Customer Data Protection and Minimization Utilities.
 This module provides utilities for:
 1. Minimizing customer data stored in prediction records
 2. Identifying sensitive fields that should not be persisted
-3. Retention policy enforcement
+3. Customer ID pseudonymization (salted SHA-256)
+4. Retention policy enforcement
 """
 
+import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Set
@@ -15,7 +17,11 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from src.config import get_settings
-from src.models import PredictionRecord, RetentionRecommendationRecord
+from src.models import (
+    CustomerPseudonymLookup,
+    PredictionRecord,
+    RetentionRecommendationRecord,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +66,108 @@ BUSINESS_REQUIRED_FIELDS: Set[str] = {
     "InternetService",      # Needed for "Offer Free Tech Support" rule
     "TechSupport",          # Needed for "Offer Free Tech Support" rule
 }
+
+
+def get_pseudonymization_salt() -> str:
+    """Get the pseudonymization salt from settings."""
+    settings = get_settings()
+    return settings.PSEUDONYMIZATION_SALT or "default-dev-salt-change-in-production"
+
+
+def pseudonymize_customer_id(customer_id: str) -> str:
+    """
+    Create a salted SHA-256 hash of the customer ID for pseudonymization.
+
+    Args:
+        customer_id: Original customer identifier
+
+    Returns:
+        64-character hex string (SHA-256 hash)
+    """
+    salt = get_pseudonymization_salt()
+    # Use salt + customer_id for consistent but irreversible hashing
+    hash_input = f"{salt}:{customer_id}".encode('utf-8')
+    return hashlib.sha256(hash_input).hexdigest()
+
+
+def create_or_update_pseudonym_lookup(
+    db: Session,
+    customer_id: str,
+    customer_id_hash: str
+) -> CustomerPseudonymLookup:
+    """
+    Create or update the pseudonym lookup entry for authorized de-pseudonymization.
+
+    Args:
+        db: Database session
+        customer_id: Original customer identifier
+        customer_id_hash: Salted SHA-256 hash of customer_id
+
+    Returns:
+        CustomerPseudonymLookup record
+    """
+    # Check if entry already exists
+    existing = db.query(CustomerPseudonymLookup).filter(
+        CustomerPseudonymLookup.customer_id_hash == customer_id_hash
+    ).first()
+
+    if existing:
+        # Update access tracking
+        existing.last_accessed_at = datetime.now(timezone.utc)  # type: ignore[assignment]
+        existing.access_count += 1  # type: ignore[assignment]
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    # Create new lookup entry
+    lookup = CustomerPseudonymLookup(
+        customer_id_hash=customer_id_hash,
+        customer_id=customer_id,
+        created_at=datetime.now(timezone.utc),
+        last_accessed_at=datetime.now(timezone.utc),
+        access_count=1
+    )
+    db.add(lookup)
+    db.commit()
+    db.refresh(lookup)
+    return lookup
+
+
+def resolve_customer_id(
+    db: Session,
+    customer_id_hash: str,
+    authorized: bool = False
+) -> Optional[str]:
+    """
+    Resolve a customer ID from its hash (authorized access only).
+
+    Args:
+        db: Database session
+        customer_id_hash: Salted SHA-256 hash
+        authorized: Whether the caller is authorized (audit logging)
+
+    Returns:
+        Original customer ID if found and authorized, None otherwise
+    """
+    if not authorized:
+        logger.warning(
+            "Unauthorized attempt to resolve customer ID hash",
+            extra={"customer_id_hash": customer_id_hash[:8] + "..."}
+        )
+        return None
+
+    lookup = db.query(CustomerPseudonymLookup).filter(
+        CustomerPseudonymLookup.customer_id_hash == customer_id_hash
+    ).first()
+
+    if lookup:
+        # Update access tracking
+        lookup.last_accessed_at = datetime.now(timezone.utc)  # type: ignore[assignment]
+        lookup.access_count += 1  # type: ignore[assignment]
+        db.commit()
+        return str(lookup.customer_id)  # type: ignore[return-value]
+
+    return None
 
 
 def get_minimized_features(
@@ -134,10 +242,10 @@ def create_prediction_record(
     minimized_features: Optional[Dict[str, Any]] = None,
 ) -> PredictionRecord:
     """
-    Create a PredictionRecord with proper data minimization.
+    Create a PredictionRecord with proper data minimization and pseudonymization.
 
     Args:
-        customer_id: Customer identifier.
+        customer_id: Customer identifier (used only for hash, not stored).
         churn_probability: Predicted churn probability.
         churn_prediction: Binary prediction (0 or 1).
         risk_segment: Risk segment (Low, Medium, High).
@@ -146,7 +254,8 @@ def create_prediction_record(
         minimized_features: Pre-minimized features (used if raw_features not provided).
 
     Returns:
-        PredictionRecord instance with minimized data.
+        PredictionRecord instance with minimized data and customer ID hash.
+        The plaintext customer_id is NOT stored - only the salted hash.
     """
     settings = get_settings()
 
@@ -159,8 +268,13 @@ def create_prediction_record(
     else:
         features_to_store = None
 
+    # Pseudonymize customer ID if enabled
+    customer_id_hash = None
+    if settings.PSEUDONYMIZATION_ENABLED:
+        customer_id_hash = pseudonymize_customer_id(customer_id)
+
     return PredictionRecord(
-        customer_id=customer_id,
+        customer_id_hash=customer_id_hash,
         churn_probability=churn_probability,
         churn_prediction=churn_prediction,
         risk_segment=risk_segment,

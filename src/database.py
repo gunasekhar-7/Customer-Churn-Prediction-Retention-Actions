@@ -6,10 +6,11 @@ modules does not require a working PostgreSQL service. The engine is created
 on first use and can be overridden for testing.
 """
 
+import logging
 import threading
-from typing import Generator, Optional
+from typing import Any, Generator, Optional
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
@@ -21,6 +22,8 @@ _engine: Optional[Engine] = None
 _session_factory: Optional[sessionmaker] = None
 
 Base = declarative_base()
+
+logger = logging.getLogger(__name__)
 
 
 def _create_engine_from_settings() -> Engine:
@@ -36,16 +39,49 @@ def _create_engine_from_settings() -> Engine:
             connect_args={"check_same_thread": False},
             poolclass=None,  # Disable pooling for SQLite
         )
+        logger.info("Created SQLite engine (pooling disabled)")
     else:
         # PostgreSQL configuration with connection pooling
+        pool_size = settings.DB_POOL_SIZE
+        max_overflow = settings.DB_MAX_OVERFLOW
+        pool_timeout = settings.DB_POOL_TIMEOUT
+        pool_recycle = settings.DB_POOL_RECYCLE
+        pool_pre_ping = settings.DB_POOL_PRE_PING
+
         engine = create_engine(
             database_url,
-            pool_pre_ping=True,
-            pool_size=5,
-            max_overflow=10,
-            pool_timeout=30,
-            pool_recycle=1800,
+            pool_pre_ping=pool_pre_ping,
+            pool_size=pool_size,
+            max_overflow=max_overflow,
+            pool_timeout=pool_timeout,
+            pool_recycle=pool_recycle,
         )
+        logger.info(
+            "Created PostgreSQL engine: pool_size=%d, max_overflow=%d, "
+            "pool_timeout=%d, pool_recycle=%d, pool_pre_ping=%s",
+            pool_size, max_overflow, pool_timeout, pool_recycle, pool_pre_ping
+        )
+
+        # Log pool statistics periodically in production
+        if settings.is_production:
+            @event.listens_for(engine, "checkout")
+            def _on_checkout(
+                dbapi_connection: Any, connection_record: Any, connection_proxy: Any
+            ) -> None:
+                """Log pool status on checkout for monitoring."""
+                pool = engine.pool
+                size = pool.size() if callable(getattr(pool, "size", None)) else getattr(pool, "size", 0)  # type: ignore[attr-defined]
+                checked_out = (
+                    pool.checkedout() if callable(getattr(pool, "checkedout", None)) else getattr(pool, "checkedout", 0)  # type: ignore[attr-defined]
+                )
+                overflow = (
+                    pool.overflow() if callable(getattr(pool, "overflow", None)) else getattr(pool, "overflow", 0)  # type: ignore[attr-defined]
+                )
+                logger.debug(
+                    "Pool status: size=%d, checked_out=%d, overflow=%d",
+                    size, checked_out, overflow
+                )
+
     return engine
 
 
@@ -113,6 +149,7 @@ def dispose_engine() -> None:
     global _engine, _session_factory
     with _engine_lock:
         if _engine is not None:
+            logger.info("Disposing database engine and connection pool")
             _engine.dispose()
             _engine = None
             _session_factory = None
@@ -132,6 +169,9 @@ def get_db() -> Generator[Session, None, None]:
     db = session_factory()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -156,3 +196,28 @@ def drop_database() -> None:
     """
     engine = get_engine()
     Base.metadata.drop_all(bind=engine)
+
+
+def get_pool_status() -> dict:
+    """
+    Get current connection pool status for monitoring.
+
+    Returns:
+        Dictionary with pool statistics.
+    """
+    engine = get_engine()
+    pool = engine.pool
+    # Handle different pool types (SQLite vs PostgreSQL)
+    size = pool.size() if callable(getattr(pool, "size", None)) else getattr(pool, "size", 0)  # type: ignore[attr-defined]
+    checked_out = (
+        pool.checkedout() if callable(getattr(pool, "checkedout", None)) else getattr(pool, "checkedout", 0)  # type: ignore[attr-defined]
+    )
+    overflow = (
+        pool.overflow() if callable(getattr(pool, "overflow", None)) else getattr(pool, "overflow", 0)  # type: ignore[attr-defined]
+    )
+    return {
+        "size": size,
+        "checked_out": checked_out,
+        "overflow": overflow,
+        "total": size + overflow,
+    }

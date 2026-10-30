@@ -26,7 +26,10 @@ dependencies = [
     "alembic>=1.12.0",
     "psycopg2-binary>=2.9.9",
     "mlflow>=2.7.0",
-    "slowapi>=0.1.9"
+    "slowapi>=0.1.9",
+    "prometheus-client>=0.19.0",
+    "redis>=5.0.0",
+    "locust>=2.15.0"
 ]
 
 [project.optional-dependencies]
@@ -34,14 +37,18 @@ dev = [
     "pytest>=7.4.0",
     "httpx>=0.25.0",
     "ruff>=0.1.0",
-    "mypy>=1.6.0"
+    "mypy>=1.6.0",
+    "tenacity>=8.0.0"
 ]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-ra -q"
+addopts = "-ra -q --cov=src --cov-fail-under=90 --cov-report=term-missing"
 testpaths = [
     "tests",
+]
+markers = [
+    "slow: long-running tests (real-time retry/backoff timing) excluded from fast local runs via -m 'not slow'",
 ]
 
 [tool.mypy]

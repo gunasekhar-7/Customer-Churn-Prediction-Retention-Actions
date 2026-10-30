@@ -1,9 +1,32 @@
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import numpy as np
+import pandas as pd
 import shap
 from sklearn.base import BaseEstimator
 from sklearn.compose import ColumnTransformer
+
+try:
+    import xgboost as xgb
+    XGBOOST_AVAILABLE = True
+except ImportError:
+    XGBOOST_AVAILABLE = False
+    xgb = None  # type: ignore
+
+
+def _make_predict_proba_wrapper(
+    model: BaseEstimator, preprocessor: ColumnTransformer
+) -> Callable[[Union[np.ndarray, pd.DataFrame]], np.ndarray]:
+    """
+    Creates a wrapper around model.predict_proba that applies the preprocessor first.
+    This ensures SHAP KernelExplainer works correctly with raw input data.
+    """
+    def predict_proba_wrapper(X: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
+        if isinstance(X, np.ndarray):
+            X = pd.DataFrame(X, columns=preprocessor.feature_names_in_)
+        X_transformed = preprocessor.transform(X)
+        return model.predict_proba(X_transformed)  # type: ignore[no-any-return]
+    return predict_proba_wrapper
 
 
 def get_feature_names(preprocessor: ColumnTransformer) -> List[str]:
@@ -28,21 +51,37 @@ def get_feature_names(preprocessor: ColumnTransformer) -> List[str]:
     return feature_names
 
 
-def get_shap_explainer(model: BaseEstimator, X_background: np.ndarray) -> shap.Explainer:
+def get_shap_explainer(
+    model: BaseEstimator,
+    X_background: np.ndarray,
+    preprocessor: Optional[ColumnTransformer] = None
+) -> shap.Explainer:
     """
     Returns a fitted SHAP Explainer.
     Handles Linear models gracefully. Tree-based models are also supported but
     this specifically defaults to LinearExplainer or KernelExplainer depending on the model.
+
+    Args:
+        model: Fitted model with predict_proba method.
+        X_background: Background dataset for SHAP (already transformed for Linear/Tree explainers).
+        preprocessor: Optional fitted ColumnTransformer to apply before model.predict_proba
+                      in the KernelExplainer fallback. Required for correct SHAP values when
+                      the model expects transformed input.
     """
     if hasattr(model, 'coef_'):
         # Linear model (Logistic Regression)
         return shap.LinearExplainer(model, X_background)
-    elif hasattr(model, 'estimators_') or 'XGB' in str(type(model)):
+    elif hasattr(model, 'estimators_') or (XGBOOST_AVAILABLE and isinstance(model, xgb.XGBClassifier)):
         # Tree based
         return shap.TreeExplainer(model)
     else:
         # Fallback to Kernel (slow but universal)
-        return shap.KernelExplainer(model.predict_proba, shap.sample(X_background, 100))
+        if preprocessor is not None:
+            predict_proba_wrapper = _make_predict_proba_wrapper(model, preprocessor)
+            return shap.KernelExplainer(predict_proba_wrapper, shap.sample(X_background, 100))
+        else:
+            # No preprocessor provided - use model.predict_proba directly (legacy behavior)
+            return shap.KernelExplainer(model.predict_proba, shap.sample(X_background, 100))
 
 
 def get_local_explanation(
