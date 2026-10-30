@@ -77,8 +77,21 @@ models/*.joblib
 .vscode/
 .idea/
 *.swp
+.kilo
 *.swo
 
 # MacOS
 .DS_Store
+
+# Test databases
 test.db
+test_env.db
+churn_dev.db
+
+# Project-specific directories
+.kilo/
+.kilocode/
+
+# Environment and cache files
+.env
+.env.local
