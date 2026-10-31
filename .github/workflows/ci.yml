@@ -208,6 +208,17 @@ jobs:
           path: sbom-api.spdx.json
           retention-days: 30
 
+      - name: Save API Docker image
+        run: |
+          docker save churn-api:test | gzip > churn-api-test.tar.gz
+
+      - name: Upload API Docker image
+        uses: actions/upload-artifact@v4
+        with:
+          name: churn-api-test-image
+          path: churn-api-test.tar.gz
+          retention-days: 1
+
   docker-build-dashboard:
     name: Build Dashboard Docker Image
     runs-on: ubuntu-latest
@@ -277,13 +288,16 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e .[dev]
           pip install locust
 
-      - name: Generate test model artifact
+      - name: Download API Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: churn-api-test-image
+
+      - name: Load API Docker image
         run: |
-          python -m scripts.create_test_artifact
-          ls -la models/
+          gunzip -c churn-api-test.tar.gz | docker load
 
       - name: Start API container
         run: |
@@ -291,16 +305,24 @@ jobs:
             -e DATABASE_URL=sqlite:///./test.db \
             -e API_KEY=dev-api-key-min-32-chars-long \
             -e REDIS_URL="" \
+            -e RATE_LIMIT_ENABLED=false \
             -p 8000:8000 \
             churn-api:test
           # Wait for API to be ready
+          READY=false
           for i in {1..30}; do
             if curl -s http://localhost:8000/health > /dev/null; then
               echo "API is ready"
+              READY=true
               break
             fi
             sleep 2
           done
+          if [ "$READY" != "true" ]; then
+            echo "API container failed to start. Container logs:"
+            docker logs churn-api-test
+            exit 1
+          fi
 
       - name: Run Locust load test (30s, 10 users)
         run: |
