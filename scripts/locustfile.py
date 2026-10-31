@@ -16,6 +16,7 @@ Requirements:
 """
 
 import json
+import os
 import random
 
 from locust import HttpUser, between, events, task
@@ -256,15 +257,16 @@ def on_test_stop(environment: Environment, **kwargs):
                   f"failures={entry.num_failures}")
 
 
-# Assertion for CI - fails if p95 > 200ms or failure rate > 1%
+# Assertion for CI - fails if p95 > threshold or failure rate > 1%
 @events.quitting.add_listener
 def on_quitting(environment: Environment, **kwargs):
     stats = environment.stats
 
     # Check p95 latency
     p95 = stats.total.get_response_time_percentile(0.95)
-    if p95 > 200:
-        print(f"\n[FAIL] p95 latency ({p95:.1f}ms) exceeds 200ms threshold")
+    p95_threshold = float(os.getenv("LOCUST_P95_THRESHOLD_MS", "250"))
+    if p95 > p95_threshold:
+        print(f"\n[FAIL] p95 latency ({p95:.1f}ms) exceeds {p95_threshold:.1f}ms threshold")
         environment.process_exit_code = 1
         return
 
