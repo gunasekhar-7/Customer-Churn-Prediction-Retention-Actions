@@ -33,13 +33,22 @@ def _create_engine_from_settings() -> Engine:
 
     # Configure engine based on database type
     if database_url.startswith("sqlite"):
-        # SQLite specific configuration
+        # SQLite specific configuration with WAL mode and timeout for concurrency
         engine = create_engine(
             database_url,
-            connect_args={"check_same_thread": False},
+            connect_args={"check_same_thread": False, "timeout": 30},
             poolclass=None,  # Disable pooling for SQLite
         )
-        logger.info("Created SQLite engine (pooling disabled)")
+
+        @event.listens_for(engine, "connect")
+        def set_sqlite_pragma(dbapi_connection: Any, connection_record: Any) -> None:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            cursor.execute("PRAGMA synchronous=NORMAL;")
+            cursor.execute("PRAGMA busy_timeout=30000;")
+            cursor.close()
+
+        logger.info("Created SQLite engine (WAL mode enabled, pooling disabled)")
     else:
         # PostgreSQL configuration with connection pooling
         pool_size = settings.DB_POOL_SIZE

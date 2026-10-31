@@ -230,6 +230,7 @@ limiter = Limiter(
     key_func=get_rate_limit_key,
     default_limits=[settings.RATE_LIMIT_DEFAULT] if settings.RATE_LIMIT_ENABLED else [],
     storage_uri=storage_uri,
+    enabled=settings.RATE_LIMIT_ENABLED,
 )
 
 

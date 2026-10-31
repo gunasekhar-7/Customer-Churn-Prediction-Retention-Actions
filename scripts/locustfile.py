@@ -264,15 +264,15 @@ def on_quitting(environment: Environment, **kwargs):
     # Check p95 latency
     p95 = stats.total.get_response_time_percentile(0.95)
     if p95 > 200:
-        print(f"\n❌ FAIL: p95 latency ({p95:.1f}ms) exceeds 200ms threshold")
+        print(f"\n[FAIL] p95 latency ({p95:.1f}ms) exceeds 200ms threshold")
         environment.process_exit_code = 1
         return
 
     # Check failure rate
     if stats.total.fail_ratio > 0.01:
-        print(f"\n❌ FAIL: Failure rate ({stats.total.fail_ratio * 100:.2f}%) exceeds 1% threshold")
+        print(f"\n[FAIL] Failure rate ({stats.total.fail_ratio * 100:.2f}%) exceeds 1% threshold")
         environment.process_exit_code = 1
         return
 
-    print(f"\n✅ PASS: p95={p95:.1f}ms, failure_rate={stats.total.fail_ratio * 100:.2f}%")
+    print(f"\n[PASS] p95={p95:.1f}ms, failure_rate={stats.total.fail_ratio * 100:.2f}%")
     environment.process_exit_code = 0

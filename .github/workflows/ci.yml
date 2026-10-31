@@ -311,7 +311,7 @@ jobs:
           # Wait for API to be ready
           READY=false
           for i in {1..30}; do
-            if curl -s http://localhost:8000/health > /dev/null; then
+            if curl -s http://localhost:8000/ready | grep -q "ready"; then
               echo "API is ready"
               READY=true
               break
@@ -319,7 +319,7 @@ jobs:
             sleep 2
           done
           if [ "$READY" != "true" ]; then
-            echo "API container failed to start. Container logs:"
+            echo "API container failed to start or is not ready. Container logs:"
             docker logs churn-api-test
             exit 1
           fi
@@ -331,6 +331,10 @@ jobs:
             --host http://localhost:8000 \
             --html locust-report.html
           # Exit code from locust (via quitting event) determines pass/fail
+
+      - name: Dump API container logs on failure
+        if: failure()
+        run: docker logs churn-api-test
 
       - name: Upload Locust report
         uses: actions/upload-artifact@v4
